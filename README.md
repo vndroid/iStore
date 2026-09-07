@@ -411,6 +411,52 @@ internal/timeout/        the one function iStore needed from imgproxy's server p
 - for AVIF output: libheif built with an AV1 **encoder** (aom, SVT-AV1 or rav1e)
 - for JPEG XL output: libjxl
 
+Alpine 3.23 (`vips` 8.17.3, `go` 1.25.10, `libheif` 1.23.0):
+
+```sh
+apk add --no-cache \
+  build-base pkgconf go \
+  vips-dev vips-heif vips-jxl \
+  font-wqy-zenhei font-noto-cjk
+```
+
+Runtime only, without the toolchain:
+
+```sh
+apk add --no-cache vips vips-heif vips-jxl font-wqy-zenhei
+```
+
+**`vips-heif` and `vips-jxl` are not optional extras.** Alpine builds libvips
+with those two codecs as *dynamic modules* in their own packages, so
+`vips-dev` alone gives a libvips that passes startup and then fails the first
+`format,avif` request with "cannot be produced by this build of libvips".
+
+The AVIF encoder, on the other hand, needs nothing extra: Alpine's libheif is
+built against `aom-dev` with no plugin flag, so aomenc is linked in — unlike
+Ubuntu, where it is a separate package.
+
+The fonts matter only for `watermark,text_`. `font-wqy-zenhei` is worth
+preferring because it is the face OSS names by default, so `type_` resolves to
+the same font iStore's mapping expects; `font-noto-cjk` is a large package and
+can be dropped if the text will never be Chinese.
+
+A multi-stage image:
+
+```dockerfile
+FROM alpine:3.23 AS build
+RUN apk add --no-cache build-base pkgconf go vips-dev vips-heif vips-jxl
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=1 go build -o /out/istore ./cmd/istore
+
+FROM alpine:3.23
+RUN apk add --no-cache vips vips-heif vips-jxl font-wqy-zenhei
+COPY --from=build /out/istore /usr/local/bin/istore
+ENV ISTORE_ROOT=/srv/images ISTORE_BIND=0.0.0.0:8080
+EXPOSE 8080
+ENTRYPOINT ["istore"]
+```
+
 Ubuntu 24.04:
 
 ```sh
