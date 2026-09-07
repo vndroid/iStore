@@ -10,15 +10,16 @@
 // The first segment names the service; only "image" exists here. Parameters are
 // mostly `key_value` pairs, but a few actions (format) take a bare value.
 //
-// iStore implements `format`, `resize`, `quality` and `info`. Everything else
+// iStore implements `resize`, `crop`, `rotate`, `auto-orient`, `blur`,
+// `quality`, `format` and `info`. Everything else
 // parses into a
 // generic Action and is rejected by Chain.Validate with a clear message, rather
 // than being silently ignored — an unrecognised transform that returns the
 // original image is worse than an error, because the caller cannot tell.
 //
-// The engine underneath (ported from imgproxy) also supports crop, rotate,
-// watermark, blur and the rest. Adding them here is a matter of translating
-// parameters into options keys; see Chain.Apply.
+// The engine underneath (ported from imgproxy) also supports watermarking,
+// sharpening, pixelation, trimming and padding. Adding them here is a matter of
+// translating parameters into options keys; see Chain.Apply.
 package ossprocess
 
 import (
@@ -137,6 +138,22 @@ func (c *Chain) Validate() error {
 			if _, err := a.quality(); err != nil {
 				return err
 			}
+		case "crop":
+			if _, err := parseCrop(a); err != nil {
+				return err
+			}
+		case "rotate":
+			if _, err := parseRotate(a); err != nil {
+				return err
+			}
+		case "auto-orient":
+			if _, err := parseAutoOrient(a); err != nil {
+				return err
+			}
+		case "blur":
+			if _, err := parseBlur(a); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("unsupported action %q", a.Name)
 		}
@@ -251,6 +268,34 @@ func (c *Chain) Apply(o *options.Options, srcW, srcH int) error {
 				return err
 			}
 			o.Set(keys.Quality, q)
+
+		case "crop":
+			cr, err := parseCrop(a)
+			if err != nil {
+				return err
+			}
+			cr.apply(o)
+
+		case "rotate":
+			deg, err := parseRotate(a)
+			if err != nil {
+				return err
+			}
+			o.Set(keys.Rotate, deg)
+
+		case "auto-orient":
+			on, err := parseAutoOrient(a)
+			if err != nil {
+				return err
+			}
+			o.Set(keys.AutoRotate, on)
+
+		case "blur":
+			sigma, err := parseBlur(a)
+			if err != nil {
+				return err
+			}
+			o.Set(keys.Blur, sigma)
 
 		default:
 			return fmt.Errorf("unsupported action %q", a.Name)

@@ -4,9 +4,9 @@ An image service that speaks the Alibaba Cloud OSS `x-oss-process` URL grammar,
 built on libvips. The image engine is ported from
 [imgproxy](https://github.com/imgproxy/imgproxy) (Apache-2.0); see `NOTICE`.
 
-Status: **working.** `image/resize`, `image/format`, `image/quality` and
-`image/info` are served over HTTP from a local directory, with a disk cache,
-request coalescing and a concurrency limit.
+Status: **working.** `resize`, `crop`, `rotate`, `auto-orient`, `blur`,
+`quality`, `format` and `info` are served over HTTP from a local directory, with
+a disk cache, request coalescing and a concurrency limit.
 
 ## Usage
 
@@ -41,6 +41,22 @@ GET /healthz
 
 `limit_1` is the default and matches OSS: if honouring the request would enlarge
 the source, the source is returned unchanged. `limit_0` allows upscaling.
+
+**`crop`** — `w_`/`h_` size, `x_`/`y_` offset, `g_` anchor
+(`nw` *(default)* `north` `ne` `west` `center` `east` `sw` `south` `se`).
+A crop larger than the image is clamped to the image, as in OSS.
+
+**`rotate`** — `0` `90` `180` `270` `360`, clockwise. OSS accepts any angle
+0–360; libvips only rotates losslessly by multiples of 90, and anything else is
+refused rather than silently rounded.
+
+**`auto-orient`** — `0` or `1`: whether to apply the EXIF orientation tag.
+Default 1, same as OSS.
+
+**`blur`** — `r_1..50`, `s_1..50`. Both are required, as in OSS, but only `s_`
+(the standard deviation) reaches the pipeline: libvips' gaussian blur takes a
+sigma and derives its own kernel radius, so `r_` is accepted for URL
+compatibility and does not change the output.
 
 **`format`** — `jpg` `jpeg` `png` `webp` `gif` `avif` `heic` `jxl` `tiff` `bmp`.
 
@@ -283,6 +299,32 @@ Pad fills with the requested colour (`color_FF8000` gives a `(255,127,0)`
 border), and quality is monotonic: `Q_30` 7,423 B, `Q_60` 11,016 B,
 `Q_90` 30,425 B.
 
+Crop and rotate are checked by pixel, not by status code, against a 400×300
+image painted in four quadrants — red top-left, green top-right, blue
+bottom-left, yellow bottom-right:
+
+```
+crop,w_200,h_150             -> all red      (nw is the default anchor)
+crop,w_200,h_150,g_ne        -> all green
+crop,w_200,h_150,g_sw        -> all blue
+crop,w_200,h_150,g_se        -> all yellow
+crop,w_200,h_150,x_200       -> all green    (x_/y_ are absolute pixels)
+crop,w_200,h_150,y_150       -> all blue
+crop,w_200,h_150,x_200,y_150 -> all yellow
+crop,w_200,h_150,g_center    -> all four quadrants, as the centre box straddles them
+
+rotate,90   300x400, red moves top-left -> top-right   (clockwise, like OSS)
+rotate,180  400x300, red moves top-left -> bottom-right
+rotate,270  300x400, red moves top-left -> bottom-left
+```
+
+Blur is monotonic, measured as the colour difference across the hard quadrant
+boundary: unblurred 510, `s_8` 160, `s_25` 52.
+
+A full chain — `crop,w_200,h_150,g_se/resize,w_100/format,avif` — returns a
+100×75 AVIF of 581 bytes whose centre pixel is `(255,255,2)`, i.e. the yellow
+quadrant, scaled and re-encoded.
+
 Path safety, all returning 404 with no content leaked:
 
 ```
@@ -301,9 +343,11 @@ deliberate — see the note on `Validate` vs `CheckEncoders` below.
 
 ## Not built yet
 
-- `crop`, `rotate`, `blur`, `watermark` and the rest of the OSS grammar. The
-  engine does all of it already; only the parameter translation in
-  `ossprocess.Chain.Apply` is missing, the same shape as `resize.go`.
+- `watermark`, `sharpen`, `pixelate`, `trim`, `indexcrop`, `circle`,
+  `rounded-corners`, `bright`, `contrast`. The pipeline covers the first five;
+  the last four have no equivalent in it and would need new vips calls.
+  Everything already supported needs only a parameter translation in
+  `ossprocess.Chain.Apply`, the same shape as `resize.go` and `crop.go`.
 - Cache eviction. Entries are keyed by source path + size + mtime + chain, so
   they invalidate themselves when a source changes, but nothing prunes the
   directory. A `find -atime` cron is enough to start.
