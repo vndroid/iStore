@@ -98,7 +98,8 @@ func TestValidate(t *testing.T) {
 		{"image/format,avif,webp", true}, // exactly one value
 		{"image/format,tga", true},       // unknown format
 		{"image/format,q_avif", true},    // wrong param key
-		{"image/resize,w_100", true},     // not implemented yet
+		{"image/resize,w_100", false},    // implemented now
+		{"image/resize,m_bogus,w_1", true},
 	}
 
 	for _, tt := range tests {
@@ -139,7 +140,7 @@ func TestApplySetsFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 	o := options.New()
-	if err := c.Apply(o); err != nil {
+	if err := c.Apply(o, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	got := options.Get(o, keys.Format, imagetype.Unknown)

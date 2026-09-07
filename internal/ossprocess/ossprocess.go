@@ -10,18 +10,20 @@
 // The first segment names the service; only "image" exists here. Parameters are
 // mostly `key_value` pairs, but a few actions (format) take a bare value.
 //
-// iStore implements `format` and `info` today. Everything else parses into a
+// iStore implements `format`, `resize`, `quality` and `info`. Everything else
+// parses into a
 // generic Action and is rejected by Chain.Validate with a clear message, rather
 // than being silently ignored — an unrecognised transform that returns the
 // original image is worse than an error, because the caller cannot tell.
 //
-// The engine underneath (ported from imgproxy) already supports resize, crop,
-// rotate, watermark and the rest. Adding them here is a matter of translating
+// The engine underneath (ported from imgproxy) also supports crop, rotate,
+// watermark, blur and the rest. Adding them here is a matter of translating
 // parameters into options keys; see Chain.Apply.
 package ossprocess
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/kane/istore/internal/imagetype"
@@ -127,6 +129,14 @@ func (c *Chain) Validate() error {
 			if _, err := a.format(); err != nil {
 				return err
 			}
+		case "resize":
+			if _, err := parseResize(a); err != nil {
+				return err
+			}
+		case "quality":
+			if _, err := a.quality(); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("unsupported action %q", a.Name)
 		}
@@ -200,10 +210,25 @@ func (c *Chain) CheckEncoders() error {
 	return nil
 }
 
+// NeedsSourceSize reports whether Apply requires the source dimensions.
+//
+// Only resize does, and the caller pays a header read for it — worth avoiding
+// on a plain `format,avif`, which is the common case.
+func (c *Chain) NeedsSourceSize() bool {
+	for _, a := range c.Actions {
+		if a.Name == "resize" {
+			return true
+		}
+	}
+	return false
+}
+
 // Apply translates the chain into pipeline options.
 //
-// Only transform chains reach here; call IsInfo first.
-func (c *Chain) Apply(o *options.Options) error {
+// srcW and srcH are the source dimensions; they may be zero when
+// NeedsSourceSize reports false. Only transform chains reach here; call IsInfo
+// first.
+func (c *Chain) Apply(o *options.Options, srcW, srcH int) error {
 	for _, a := range c.Actions {
 		switch a.Name {
 		case "format":
@@ -212,11 +237,57 @@ func (c *Chain) Apply(o *options.Options) error {
 				return err
 			}
 			o.Set(keys.Format, t)
+
+		case "resize":
+			r, err := parseResize(a)
+			if err != nil {
+				return err
+			}
+			r.Resolve(srcW, srcH).apply(o)
+
+		case "quality":
+			q, err := a.quality()
+			if err != nil {
+				return err
+			}
+			o.Set(keys.Quality, q)
+
 		default:
 			return fmt.Errorf("unsupported action %q", a.Name)
 		}
 	}
 	return nil
+}
+
+// quality reads an `image/quality` action.
+//
+// OSS distinguishes two spellings:
+//
+//	Q_n  absolute quality
+//	q_n  relative quality — for JPEG, n percent OF THE SOURCE's quality
+//
+// iStore treats both as absolute. Honouring q_ properly would mean recovering
+// the source's own quantisation tables and scaling them, which libvips does not
+// expose; rejecting q_ instead would break the spelling most OSS URLs actually
+// use. So it is accepted and documented as an approximation: for a source saved
+// at a quality near iStore's own default the two agree closely, and for a very
+// low-quality source q_ will produce a larger file here than OSS would.
+func (a Action) quality() (int, error) {
+	if len(a.Params) != 1 {
+		return 0, fmt.Errorf("\"quality\" takes exactly one value, e.g. quality,q_80")
+	}
+	p := a.Params[0]
+	if p.Key != "q" && p.Key != "Q" {
+		return 0, fmt.Errorf("\"quality\" takes q_ or Q_, got %q", p.Key)
+	}
+	v, err := strconv.Atoi(p.Value)
+	if err != nil {
+		return 0, fmt.Errorf("\"quality\" value must be a number, got %q", p.Value)
+	}
+	if v < 1 || v > 100 {
+		return 0, fmt.Errorf("\"quality\" must be between 1 and 100, got %d", v)
+	}
+	return v, nil
 }
 
 // IsEmpty reports whether the chain asks for nothing.

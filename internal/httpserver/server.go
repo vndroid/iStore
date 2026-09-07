@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -268,10 +269,21 @@ func (s *Server) serveProcessed(w http.ResponseWriter, r *http.Request, chain *o
 		}
 	}
 
+	// resize needs the source dimensions to resolve OSS's mode/limit rules.
+	// Reading them costs a 64 KiB header parse, so it only happens for chains
+	// that actually ask.
+	var srcW, srcH int
+	if chain.NeedsSourceSize() {
+		if srcW, srcH, err = s.sourceSize(path); err != nil {
+			s.failProcess(w, r, err)
+			return
+		}
+	}
+
 	// Collapse duplicate work: a page referencing the same transform twelve
 	// times should cost one encode, not twelve.
 	res, err, shared := s.flight.Do(key.Hash(), func() (any, error) {
-		return s.process(r.Context(), path, chain)
+		return s.process(r.Context(), path, chain, srcW, srcH)
 	})
 	if err != nil {
 		s.failProcess(w, r, err)
@@ -299,7 +311,46 @@ type processed struct {
 	mime string
 }
 
-func (s *Server) process(ctx context.Context, path string, chain *ossprocess.Chain) (*processed, error) {
+// sourceSize reads the source's pixel dimensions as cheaply as the format
+// allows: a header parse for JPEG/PNG/GIF/WebP, a libvips header load otherwise.
+func (s *Server) sourceSize(path string) (int, int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer f.Close()
+
+	st, err := f.Stat()
+	if err != nil {
+		return 0, 0, err
+	}
+
+	info, err := imageinfo.Read(f, st.Size())
+	var unsupported imageinfo.ErrUnsupportedContainer
+	if errors.As(err, &unsupported) {
+		s.acquire()
+		defer s.release()
+
+		data, derr := imagedata.NewFromFile(path)
+		if derr != nil {
+			return 0, 0, derr
+		}
+		defer data.Close()
+
+		img := new(vips.Image)
+		defer img.Clear()
+		if lerr := img.Load(data, 1.0, 0, 1); lerr != nil {
+			return 0, 0, lerr
+		}
+		return img.Width(), img.PageHeight(), nil
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	return info.ImageWidth, info.ImageHeight, nil
+}
+
+func (s *Server) process(ctx context.Context, path string, chain *ossprocess.Chain, srcW, srcH int) (*processed, error) {
 	if s.cfg.ProcessTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, s.cfg.ProcessTimeout)
@@ -313,7 +364,7 @@ func (s *Server) process(ctx context.Context, path string, chain *ossprocess.Cha
 	defer src.Close()
 
 	o := options.New()
-	if err := chain.Apply(o); err != nil {
+	if err := chain.Apply(o, srcW, srcH); err != nil {
 		return nil, err
 	}
 
