@@ -4,8 +4,63 @@ An image service that speaks the Alibaba Cloud OSS `x-oss-process` URL grammar,
 built on libvips. The image engine is ported from
 [imgproxy](https://github.com/imgproxy/imgproxy) (Apache-2.0); see `NOTICE`.
 
-Status: **the full imgproxy processing pipeline is ported and verified.
-The HTTP layer is not written yet.**
+Status: **working.** `image/format` and `image/info` are served over HTTP from a
+local directory, with a disk cache, request coalescing and a concurrency limit.
+
+## Usage
+
+```sh
+ISTORE_ROOT=/srv/images \
+ISTORE_CACHE_DIR=/var/cache/istore \
+ISTORE_BIND=127.0.0.1:8080 \
+  istore
+```
+
+```
+GET /photo.jpg                                 the source, untouched
+GET /photo.jpg?x-oss-process=image/format,avif  transcoded
+GET /photo.jpg?x-oss-process=image/info         JSON metadata
+GET /healthz
+```
+
+`image/info` returns the OSS shape, every value a string:
+
+```json
+{
+  "FileSize": {"value": "17947"},
+  "Format": {"value": "jpg"},
+  "FrameCount": {"value": "1"},
+  "ImageHeight": {"value": "267"},
+  "ImageWidth": {"value": "400"},
+  "ResolutionUnit": {"value": "1"},
+  "XResolution": {"value": "1/1"},
+  "YResolution": {"value": "1/1"}
+}
+```
+
+Errors use the OSS envelope, so a client written against OSS parses them
+unchanged:
+
+```json
+{"Code": "InvalidArgument", "Message": "unsupported format \"tga\""}
+```
+
+### Configuration
+
+| variable | default | meaning |
+|---|---|---|
+| `ISTORE_ROOT` | *(required)* | directory images are served from |
+| `ISTORE_CACHE_DIR` | *(unset — no cache)* | where transcoded results are stored |
+| `ISTORE_BIND` | `:8080` | listen address |
+| `ISTORE_CONCURRENCY` | `GOMAXPROCS` | simultaneous encodes |
+| `ISTORE_MAX_SOURCE_BYTES` | `104857600` | reject larger sources |
+| `ISTORE_PROCESS_TIMEOUT_MS` | `20000` | per-request processing deadline |
+| `ISTORE_CACHE_CONTROL` | `public, max-age=31536000, immutable` | response header |
+| `ISTORE_AVIF_SPEED` | `8` | 0 slowest/smallest .. 9 fastest/largest |
+| `ISTORE_LOG_LEVEL` | `info` | debug / info / warn / error |
+
+Every `ISTORE_*` variable imgproxy documents as `IMGPROXY_*` for the processing
+and security layers also applies; the prefix is the only change.
 
 ## Why not just run imgproxy
 
@@ -161,16 +216,59 @@ image, for calibration:
 Every conversion result must be cached; at 149 ms a page of thumbnails would
 otherwise saturate a small box.
 
+## Verified end to end
+
+Against a running server, source `t.jpg` 2400×1350:
+
+```
+info (jpg/png/gif/webp)     dimensions match Pillow exactly; GIF frame count too
+info (avif)                 2400x1350 via the libvips fallback
+format,avif|jxl|webp|png|jpg  200, correct Content-Type, decodes to 2400x1350
+cache                       MISS 223ms -> HIT 1.4ms
+singleflight                12 concurrent identical requests -> 1 MISS + 11 COALESCED,
+                            1 cache entry (not 12 encodes)
+HEAD                        200, no body;  POST -> 405
+```
+
+Path safety, all returning 404 with no content leaked:
+
+```
+/../etc/passwd            /..%2f..%2fetc%2fpasswd    /sub/../../etc/passwd
+/etc/passwd               /  (directory)
+/escape.jpg               (a symlink inside the root pointing at /etc/passwd)
+```
+
+Argument errors, all 400 with an OSS envelope: `image/info,x_1`,
+`image/format`, `image/format,tga`, `image/info/format,avif`,
+`image/resize,w_100`, `video/info`.
+
+`go test ./internal/...` covers the grammar, the path resolver and the header
+parsers. Those three packages are pure logic and need no libvips, which is
+deliberate — see the note on `Validate` vs `CheckEncoders` below.
+
 ## Not built yet
 
-- `x-oss-process` parser (`image/format,avif`, `image/info`)
-- local-directory source
-- HTTP handlers
-- result cache, concurrency limit, singleflight
+- `resize`, `crop`, `quality` and the rest of the OSS grammar. The engine
+  already does all of it (`resize w=800 + avif` above is real); only the
+  parameter translation in `ossprocess.Chain.Apply` is missing.
+- Cache eviction. Entries are keyed by source path + size + mtime + chain, so
+  they invalidate themselves when a source changes, but nothing prunes the
+  directory. A `find -atime` cron is enough to start.
+- Request signing. `internal/security` carries imgproxy's implementation and it
+  is wired to `ISTORE_KEY` / `ISTORE_SALT`, but nothing calls it: with a local
+  root and a path-traversal-safe resolver there is no URL to forge. That changes
+  the day a remote source is added.
 
-Decode limits (max resolution, max frames, max source bytes) came with
-`internal/security` and are already enforced by the pipeline; they just need
-wiring to config.
+## One design note worth keeping
+
+`ossprocess.Validate()` checks grammar only. Whether libvips can actually
+*encode* a format is `CheckEncoders()`, called separately after `vips.Init()`.
+
+They are split because `vips.SupportsSave()` calls into the C library, and
+libvips aborts the process with `SIGABRT` if `vips_init` has not run — not an
+error return, a crash. A syntax check that touched it could not be unit-tested,
+and any code path reaching it before startup would take the process down. The
+test suite found this the first time it ran.
 
 ## A note on JPEG XL
 
