@@ -74,6 +74,7 @@ func run() error {
 	hc.MaxSourceBytes = int64(envInt("ISTORE_MAX_SOURCE_BYTES", int(hc.MaxSourceBytes)))
 	hc.ProcessTimeout = time.Duration(envInt("ISTORE_PROCESS_TIMEOUT_MS", int(hc.ProcessTimeout/time.Millisecond))) * time.Millisecond
 	hc.CacheControl = env("ISTORE_CACHE_CONTROL", hc.CacheControl)
+	hc.Verifier = checker
 	hc.Evict = cache.EvictConfig{
 		MaxBytes: int64(envInt("ISTORE_CACHE_MAX_BYTES", 0)),
 		MaxAge:   time.Duration(envInt("ISTORE_CACHE_MAX_AGE_HOURS", 0)) * time.Hour,
@@ -83,6 +84,11 @@ func run() error {
 	if hc.CacheDir == "" {
 		slog.Warn("ISTORE_CACHE_DIR is unset: every request re-encodes its image. " +
 			"One AVIF encode of a 2400x1350 frame costs roughly 150ms of CPU.")
+	}
+
+	if !checker.SignatureEnabled() {
+		slog.Warn("ISTORE_KEY / ISTORE_SALT are unset: requests are not signed, " +
+			"so anyone who can reach this port can ask for any transform of any object under ISTORE_ROOT.")
 	}
 
 	srv, err := httpserver.New(hc, func(wm auximageprovider.Provider) (*processing.Processor, error) {

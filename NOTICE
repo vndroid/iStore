@@ -1,6 +1,30 @@
 iStore
 Copyright (c) 2026 Kane
 
+iStore is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License, version 3, as published by the
+Free Software Foundation. A copy is in LICENSE.
+
+Section 13 is the one worth reading before you deploy this: iStore is a network
+service, and if you modify it and let anyone else use it over a network, you
+have to offer them the modified source.
+
+================================================================================
+Why AGPL-3.0 over Apache-2.0 code
+================================================================================
+
+The image engine is imgproxy's, under Apache-2.0 (LICENSE-imgproxy). Apache-2.0
+is one-way compatible with the GPL family at version 3: a work built from
+Apache-2.0 sources may be distributed under AGPL-3.0, and this one is. That
+compatibility runs one way only. The files listed below stay under Apache-2.0
+terms as iStore received them, their notices are retained here, and nothing in
+this repository relicenses imgproxy itself.
+
+libvips, which iStore links against dynamically, is LGPL-2.1 *or later*. That
+"or later" is what makes the combination lawful: it lets libvips be taken under
+LGPL-3.0, which is compatible with AGPL-3.0. A libvips build pinned to
+LGPL-2.1-only would not be.
+
 ================================================================================
 Portions of this software are derived from imgproxy
 ================================================================================
@@ -75,3 +99,16 @@ libvips
   iStore links against libvips dynamically via cgo. libvips in turn loads
   libheif, libaom/libdav1d, libjxl, libwebp, libjpeg-turbo, libpng and others,
   each under its own license. See your libvips build for the exact set.
+
+================================================================================
+Go dependencies
+================================================================================
+
+github.com/trimmer-io/go-xmp
+  Copyright (c) 2017-2018 Alexander Eichhorn
+  Licensed under the Apache License, Version 2.0
+  https://github.com/trimmer-io/go-xmp
+
+  The only module in go.mod. It is compiled into the binary, so it is
+  distributed with it; Apache-2.0 is compatible with AGPL-3.0 the same way
+  imgproxy's code is.

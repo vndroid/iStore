@@ -1,3 +1,4 @@
 /istore
 /cache/
 .DS_Store
+/.ci-cache/

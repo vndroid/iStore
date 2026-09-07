@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/kane/istore/internal/imagedata"
@@ -30,11 +29,14 @@ import (
 type watermarkProvider struct {
 	src *source.Local
 
-	// Watermarks repeat across requests far more than sources do — a site
-	// usually has one — so they are held in memory after the first build. The
-	// map is keyed by everything that went into the image, and never evicted:
-	// the number of distinct watermarks a deployment uses is small and bounded
-	// by what its own URLs reference.
+	// Image watermarks repeat across requests far more than sources do — a site
+	// usually has one — so they are held in memory after the first read. The map
+	// is keyed by the object path and never evicted, which is safe precisely
+	// because that key is a path: the number of distinct entries is bounded by
+	// the number of files under the root, the same bound the disk cache already
+	// lives with.
+	//
+	// Nothing built from `text_` goes in here. See cacheable.
 	mu     sync.RWMutex
 	loaded map[string]imagedata.ImageData
 }
@@ -79,19 +81,24 @@ func readWatermarkSpec(o *options.Options) watermarkSpec {
 	}
 }
 
-// cacheKey identifies the built image. Everything that changes a pixel is in it;
-// nothing that only changes where the finished watermark is placed.
-func (s watermarkSpec) cacheKey() string {
-	if s.text == "" {
-		return "img\x00" + s.path
-	}
+// cacheable reports whether the image built from this spec may be held in the
+// in-memory map.
+//
+// Only a plain object-key watermark is. Its key is the object path, so the set
+// of possible keys is the set of files under the root — a bound the deployment
+// already accepts.
+//
+// A text watermark is not, and this is the whole point of the method. `text_`,
+// `type_`, `color_`, `size_`, `shadow_` and `rotate_` are free parameters of the
+// request, so a key built from them is chosen by whoever is calling: a loop over
+// `watermark,text_<random>` would grow the map until the process is killed, from
+// an unauthenticated GET. Rendering a line of Pango text costs a few hundred
+// microseconds, which is not worth a cache whose size a stranger picks.
+func (s watermarkSpec) cacheable() bool { return s.text == "" }
 
-	return strings.Join([]string{
-		"mix", s.path, s.text, s.font, s.color.String(),
-		fmt.Sprint(s.size), fmt.Sprint(s.shadow), fmt.Sprint(s.rotate),
-		fmt.Sprint(s.order), fmt.Sprint(s.align), fmt.Sprint(s.interval),
-	}, "\x00")
-}
+// cacheKey identifies a cacheable image. Only ever called when cacheable() is
+// true, so the object path is the entire key.
+func (s watermarkSpec) cacheKey() string { return s.path }
 
 // Get implements auximageprovider.Provider.
 func (p *watermarkProvider) Get(_ context.Context, o *options.Options) (imagedata.ImageData, http.Header, error) {
@@ -99,6 +106,16 @@ func (p *watermarkProvider) Get(_ context.Context, o *options.Options) (imagedat
 	if spec.path == "" && spec.text == "" {
 		// No watermark requested. The pipeline treats a nil image as "skip".
 		return nil, nil, nil
+	}
+
+	if !spec.cacheable() {
+		// Built fresh and handed straight to the caller, who closes it. Nothing
+		// is retained, so nothing accumulates.
+		d, err := p.build(spec)
+		if err != nil {
+			return nil, nil, err
+		}
+		return d, make(http.Header), nil
 	}
 
 	key := spec.cacheKey()

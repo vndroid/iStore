@@ -3,12 +3,15 @@
 An image service that speaks the Alibaba Cloud OSS `x-oss-process` URL grammar,
 built on libvips. The image engine is ported from
 [imgproxy](https://github.com/imgproxy/imgproxy) (Apache-2.0); see `NOTICE`.
+iStore itself is AGPL-3.0 — see `LICENSE`, and the License section at the end
+for why those two go together.
 
 Status: **working.** `resize`, `crop`, `indexcrop`, `trim`, `rotate`,
 `auto-orient`, `blur`, `sharpen`, `pixelate`, `bright`, `contrast`, `circle`,
 `rounded-corners`, `watermark`, `quality`, `format`, `interlace`, `info` and
 `average-hue` are served over HTTP from a local directory, with a bounded disk cache, request coalescing,
-a concurrency limit and `Accept`-based format negotiation.
+a concurrency limit, `Accept`-based format negotiation and optional HMAC request
+signing.
 
 ## Usage
 
@@ -163,6 +166,13 @@ The object key is read from the same root as the image, through the same
 resolver, so traversal and symlink escapes are refused there too. All four
 base64 spellings (raw/padded × url/standard alphabet) are accepted.
 
+An **image** watermark is held in memory after the first read, keyed by its
+object key. A **text** watermark is rendered on every request and never cached:
+its key would be made of `text_`, `type_`, `color_`, `size_`, `shadow_` and
+`rotate_`, all of which the caller picks, so a loop over distinct strings would
+grow that map until the process died. Rendering a line of Pango text costs a few
+hundred microseconds, which is the right price for not having that.
+
 Combinations that cannot all be honoured are refused rather than half-applied:
 `y_` with `voffset_` (both are the vertical offset), `g_`/`x_`/`y_` with
 `fill_1` (which has no anchor), `padx_`/`pady_` without it, `P_` without an
@@ -279,10 +289,61 @@ unchanged:
 | `ISTORE_CACHE_MAX_AGE_HOURS` | `0` *(no age bound)* | evict entries untouched for longer |
 | `ISTORE_CACHE_EVICT_INTERVAL_MIN` | `10` | how often to sweep |
 | `ISTORE_AVIF_SPEED` | `8` | 0 slowest/smallest .. 9 fastest/largest |
+| `ISTORE_KEY` | *(unset — no signing)* | hex HMAC key, comma-separated for rotation |
+| `ISTORE_SALT` | *(unset — no signing)* | hex HMAC salt, one per key |
+| `ISTORE_SIGNATURE_SIZE` | `32` | bytes of the HMAC kept, 1..32 |
+| `ISTORE_TRUSTED_SIGNATURES` | *(unset)* | signature strings accepted verbatim |
 | `ISTORE_LOG_LEVEL` | `info` | debug / info / warn / error |
 
 Every `ISTORE_*` variable imgproxy documents as `IMGPROXY_*` for the processing
 and security layers also applies; the prefix is the only change.
+
+### Request signing
+
+Off by default. Set **both** `ISTORE_KEY` and `ISTORE_SALT` (hex-encoded) and
+every request except `/healthz` must carry a valid `x-istore-signature`, or it
+gets `403` with `{"Code":"AccessDenied","Message":"Forbidden"}`. With either one
+unset, nothing is checked and the server says so once at startup.
+
+```sh
+ISTORE_KEY=$(openssl rand -hex 32) ISTORE_SALT=$(openssl rand -hex 32) istore
+```
+
+What is signed is the object path with the process chain appended exactly as it
+appears in the URL, and nothing else:
+
+```
+/photo.jpg
+/photo.jpg?x-oss-process=image/resize,w_800
+```
+
+Both halves have to be in it. Signing the path alone would let anyone rewrite
+the transform on a URL they were handed, and an unbounded chain of resizes is a
+cheap way to spend someone else's CPU; signing the chain alone would let them
+point it at a different object. Other query parameters are outside the
+signature on purpose — cache-busters and analytics tags get added by things
+that do not have the key.
+
+`cmd/sign` computes it, reading the same two variables:
+
+```sh
+go build -o sign ./cmd/sign
+SIG=$(ISTORE_KEY=$KEY ISTORE_SALT=$SALT ./sign '/photo.jpg?x-oss-process=image/resize,w_800')
+curl "http://localhost:8080/photo.jpg?x-oss-process=image/resize,w_800&x-istore-signature=$SIG"
+```
+
+The chain has to match byte for byte, including the order of its own
+parameters, because that string is what was signed.
+
+Two details worth knowing. `ISTORE_KEY` and `ISTORE_SALT` are comma-separated
+lists, and **any** configured pair validates, so a new key can be rolled out
+before the old one is retired. And the rejection body is deliberately the same
+for a missing signature, a wrong key and a signature issued for another path —
+the real reason goes to the log at debug level, not to the client.
+
+imgproxy signs in the URL path, because its path *is* the request. iStore's path
+is the object key and nothing else, so the signature is a query parameter rather
+than a segment spliced in front of a real filename.
 
 ## Why not just run imgproxy
 
@@ -763,9 +824,17 @@ Argument errors, all 400 with an OSS envelope: `image/info,x_1`,
 `image/format`, `image/format,tga`, `image/info/format,avif`,
 `image/resize,w_100`, `video/info`.
 
-`go test ./internal/...` covers the grammar, the path resolver and the header
-parsers. Those three packages are pure logic and need no libvips, which is
-deliberate — see the note on `Validate` vs `CheckEncoders` below.
+`go test ./internal/...` covers the grammar, the path resolver, the header
+parsers, the cache evictor, the watermark provider's caching rule and the
+signature. Those packages are pure logic and need no libvips, which is
+deliberate — see the note on `Validate` vs `CheckEncoders` below. The
+pixel-level checks above are not in there: they need a live libvips and a real
+image, and they were run by hand.
+
+CI (`.github/workflows/ci.yml`) builds and runs those tests on Alpine 3.23 with
+`vips-heif` and `vips-jxl` installed, plus a `gofmt` and `go mod tidy` check. A
+cgo project needs the build itself to be the test — "it compiles here" is a
+claim about one libvips, not about Go.
 
 ## Not built yet
 
@@ -776,10 +845,6 @@ Every action in OSS's own list is implemented. What is left is not an action.
 - `style/<name>` — OSS's saved presets, defined in its console. Rejected with an
   explicit message rather than ignored. Would need a config file mapping a name
   to a chain.
-- Request signing. `internal/security` carries imgproxy's implementation and it
-  is wired to `ISTORE_KEY` / `ISTORE_SALT`, but nothing calls it: with a local
-  root and a path-traversal-safe resolver there is no URL to forge. That changes
-  the day a remote source is added.
 - `padding`, `extend` and focus-point gravity are imgproxy features with no OSS
   spelling. `extend` is already reachable through `resize,m_pad`; the other two
   would need an iStore-invented action name.
@@ -822,3 +887,18 @@ the covering size is computed here and forced, so nothing is cropped.
 (caniuse): Chrome 145–155 has it behind a flag, **Edge does not support it**,
 Firefox does not, Safari 17+ is partial. Serve it only via `Accept` negotiation,
 and expect near-zero traffic.
+
+## License
+
+iStore is licensed under the **GNU Affero General Public License, version 3**
+(`LICENSE`). It is a network service, so section 13 is the clause that matters:
+modify it and let other people use it over a network, and you owe them the
+modified source.
+
+The image engine is imgproxy's, under Apache-2.0 (`LICENSE-imgproxy`).
+Apache-2.0 is one-way compatible with the GPL family at version 3, so a work
+built from it may be distributed under AGPL-3.0 — the compatibility does not
+run the other way, and nothing here relicenses imgproxy itself. libvips is
+LGPL-2.1 *or later*, and it is that "or later" which makes the link lawful: it
+allows LGPL-3.0, which is compatible with AGPL-3.0. `NOTICE` has the full
+attribution, the file-by-file provenance and the third-party list.

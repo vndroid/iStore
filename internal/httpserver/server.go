@@ -52,7 +52,28 @@ type Config struct {
 	CacheControl string
 	// Evict bounds the disk cache. Zero Interval leaves it unbounded.
 	Evict cache.EvictConfig
+	// Verifier checks request signatures. Nil, or one that reports signing is
+	// unconfigured, serves every request unsigned.
+	Verifier SignatureVerifier
 }
+
+// SignatureVerifier checks that a request was issued by someone holding the
+// shared key. *security.Checker implements it.
+type SignatureVerifier interface {
+	// SignatureEnabled reports whether a key and salt are configured. When it is
+	// false the server does not ask for a signature at all.
+	SignatureEnabled() bool
+	// VerifySignature returns nil if signature is valid for message.
+	VerifySignature(ctx context.Context, signature, message string) error
+}
+
+// SignatureQueryKey is the query parameter carrying a request's signature.
+//
+// imgproxy signs in the path, because its path *is* the request: options and
+// source URL are both segments of it. iStore's path is the object key and
+// nothing else, so a signature segment would have to be spliced in front of a
+// real filename. A query parameter leaves the key alone.
+const SignatureQueryKey = "x-istore-signature"
 
 // NewDefaultConfig returns usable defaults.
 func NewDefaultConfig() Config {
@@ -79,6 +100,10 @@ type Server struct {
 	// watermarks is handed to the processor at construction time; it reads the
 	// requested object key out of each request's options.
 	watermarks *watermarkProvider
+
+	// verifier is nil unless a key and salt are configured, so the check costs
+	// one nil comparison on the unsigned deployment.
+	verifier SignatureVerifier
 
 	stop chan struct{}
 }
@@ -115,6 +140,11 @@ func New(cfg Config, newProcessor func(auximageprovider.Provider) (*processing.P
 		n = 1
 	}
 
+	var verifier SignatureVerifier
+	if cfg.Verifier != nil && cfg.Verifier.SignatureEnabled() {
+		verifier = cfg.Verifier
+	}
+
 	return &Server{
 		cfg:        cfg,
 		src:        src,
@@ -122,6 +152,7 @@ func New(cfg Config, newProcessor func(auximageprovider.Provider) (*processing.P
 		proc:       proc,
 		sem:        make(chan struct{}, n),
 		watermarks: watermarks,
+		verifier:   verifier,
 		stop:       stop,
 	}, nil
 }
@@ -139,8 +170,15 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// /healthz is exempt: it reports whether libvips is alive and reveals nothing
+	// about the objects being served, and a load balancer has no key.
 	if r.URL.Path == "/healthz" {
 		s.health(w)
+		return
+	}
+
+	if err := s.verifySignature(r); err != nil {
+		s.failSignature(w, r, err)
 		return
 	}
 
@@ -172,6 +210,60 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.serveProcessed(w, r, chain, raw)
 	}
+}
+
+// ----------------------------------------------------------------- signature
+
+// SignedMessage is what a signature covers: the object path with the process
+// chain appended exactly as it appears in the URL, and nothing else.
+//
+//	/photo.jpg
+//	/photo.jpg?x-oss-process=image/resize,w_800
+//
+// Both halves have to be in it. Signing the path alone would let anyone rewrite
+// the transform on a URL they were handed, and an unbounded chain of resizes is
+// a cheap way to spend someone else's CPU; signing the chain alone would let
+// them point it at a different object. Other query parameters are outside the
+// signature deliberately — cache-busters and analytics tags are added by things
+// that do not have the key.
+func SignedMessage(path, chain string) string {
+	if chain == "" {
+		return path
+	}
+	return path + "?" + ossprocess.QueryKey + "=" + chain
+}
+
+// verifySignature checks the request's x-istore-signature parameter.
+//
+// It is a no-op until ISTORE_KEY and ISTORE_SALT are both set: New leaves
+// s.verifier nil otherwise, so an unsigned deployment behaves exactly as it did
+// before signing existed.
+func (s *Server) verifySignature(r *http.Request) error {
+	if s.verifier == nil {
+		return nil
+	}
+
+	q := r.URL.Query()
+	msg := SignedMessage(r.URL.Path, q.Get(ossprocess.QueryKey))
+
+	return s.verifier.VerifySignature(r.Context(), q.Get(SignatureQueryKey), msg)
+}
+
+// failSignature answers a rejected signature.
+//
+// The body says only "Forbidden". Which of "no signature", "wrong key" and
+// "signature for a different path" it was is information a prober would use to
+// work out what iStore signs, and the operator gets the real reason in the log.
+func (s *Server) failSignature(w http.ResponseWriter, r *http.Request, err error) {
+	slog.Debug("signature rejected", "path", r.URL.Path, "error", err)
+
+	status := http.StatusForbidden
+	var coded interface{ StatusCode() int }
+	if errors.As(err, &coded) {
+		status = coded.StatusCode()
+	}
+
+	s.fail(w, r, status, "AccessDenied", "Forbidden")
 }
 
 // ------------------------------------------------------------------ original
