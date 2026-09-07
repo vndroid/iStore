@@ -4,9 +4,10 @@ An image service that speaks the Alibaba Cloud OSS `x-oss-process` URL grammar,
 built on libvips. The image engine is ported from
 [imgproxy](https://github.com/imgproxy/imgproxy) (Apache-2.0); see `NOTICE`.
 
-Status: **working.** `resize`, `crop`, `rotate`, `auto-orient`, `blur`,
-`quality`, `format` and `info` are served over HTTP from a local directory, with
-a disk cache, request coalescing and a concurrency limit.
+Status: **working.** `resize`, `crop`, `indexcrop`, `rotate`, `auto-orient`,
+`blur`, `sharpen`, `watermark`, `quality`, `format` and `info` are served over
+HTTP from a local directory, with a bounded disk cache, request coalescing,
+a concurrency limit and `Accept`-based format negotiation.
 
 ## Usage
 
@@ -58,7 +59,39 @@ Default 1, same as OSS.
 sigma and derives its own kernel radius, so `r_` is accepted for URL
 compatibility and does not change the output.
 
-**`format`** — `jpg` `jpeg` `png` `webp` `gif` `avif` `heic` `jxl` `tiff` `bmp`.
+**`indexcrop`** — `x_<size>,i_<index>` or `y_<size>,i_<index>`. Cuts the image
+into slices of `size` pixels along one axis and keeps the `index`-th, 0-based.
+Despite the name, `x_`/`y_` are the slice width/height, not a count. A final
+short slice is kept rather than discarded, as in OSS.
+
+**`sharpen`** — `50..399`. OSS does not say what the number means; the pipeline
+takes a gaussian sigma, so this maps `v/100`, putting OSS's recommended 100 at
+sigma 1. A calibration, not a specification — output will not be bit-identical
+to OSS.
+
+**`watermark`** — `image_<base64url of an object key>`, `t_0..100` opacity,
+`g_` anchor (default `se`), `x_`/`y_` offsets. The watermark is read from the
+same root as the image, through the same resolver, so traversal and symlink
+escapes are refused there too. All four base64 spellings (raw/padded ×
+url/standard alphabet) are accepted.
+
+> `text_` watermarks are **not** supported. Rendering text needs a text engine;
+> libvips has one via Pango but imgproxy's binding does not expose it, so the
+> parser refuses `text_` rather than silently dropping it.
+
+**`format`** — `jpg` `jpeg` `png` `webp` `gif` `avif` `heic` `jxl` `tiff` `bmp`,
+plus **`auto`**.
+
+`format,auto` is an iStore addition, not an OSS action. It picks the best format
+the client's `Accept` header lists — AVIF, then WebP, then the source's own
+format — and sets `Vary: Accept`. It exists because the alternative is a
+`<picture>` element with an AVIF `<source>` and a fallback, hand-written at every
+call site and stale the moment browser support moves.
+
+Wildcards are ignored on purpose: every browser sends `*/*`, and treating that
+as "AVIF is fine" would send AVIF to clients that cannot read it. JPEG XL is not
+a candidate — at ~15% support it would mean encoding a format almost nobody can
+read, and it is the slowest of the three to produce. Ask for it explicitly.
 
 **`quality`** — `Q_1..100` (absolute) or `q_1..100`.
 
@@ -105,6 +138,9 @@ unchanged:
 | `ISTORE_MAX_SOURCE_BYTES` | `104857600` | reject larger sources |
 | `ISTORE_PROCESS_TIMEOUT_MS` | `20000` | per-request processing deadline |
 | `ISTORE_CACHE_CONTROL` | `public, max-age=31536000, immutable` | response header |
+| `ISTORE_CACHE_MAX_BYTES` | `0` *(unbounded)* | evict least-recently-used entries above this |
+| `ISTORE_CACHE_MAX_AGE_HOURS` | `0` *(no age bound)* | evict entries untouched for longer |
+| `ISTORE_CACHE_EVICT_INTERVAL_MIN` | `10` | how often to sweep |
 | `ISTORE_AVIF_SPEED` | `8` | 0 slowest/smallest .. 9 fastest/largest |
 | `ISTORE_LOG_LEVEL` | `info` | debug / info / warn / error |
 
@@ -325,6 +361,40 @@ A full chain — `crop,w_200,h_150,g_se/resize,w_100/format,avif` — returns a
 100×75 AVIF of 581 bytes whose centre pixel is `(255,255,2)`, i.e. the yellow
 quadrant, scaled and re-encoded.
 
+`indexcrop` on the same 400×300 quadrant image:
+
+```
+indexcrop,x_200,i_0  -> 200x300, left half   (red over blue)
+indexcrop,x_200,i_1  -> 200x300, right half  (green over yellow)
+indexcrop,y_150,i_1  -> 400x150, bottom half (blue and yellow)
+indexcrop,x_150,i_2  -> 100x300               (the short final slice, kept)
+indexcrop,x_200,i_5  -> 400 "i is 5 but the image only has 2 slice(s) of 200 px"
+```
+
+`watermark` with an 80×40 magenta logo lands in the anchored corner
+(`g_se`/`g_nw`/`g_center` all verified by scanning for magenta in that region),
+and opacity blends: over the yellow quadrant, `t_20` gives `(255,215,40)` and
+`t_100` gives `(255,54,200)`. A watermark key of `../../etc/passwd`, a symlink
+out of the root, and a missing file all return the same 400 —
+`watermark image not found` — so the endpoint cannot be used to probe the
+filesystem.
+
+`format,auto`:
+
+```
+Accept: image/avif,image/webp,*/*   -> image/avif   Vary: Accept
+Accept: image/webp,*/*              -> image/webp   Vary: Accept
+Accept: */*                         -> image/png    (the source format)
+Accept: (absent)                    -> image/png
+```
+
+Three distinct capabilities produced three cache entries; the last two share one.
+
+Cache eviction, ten entries totalling 438,603 bytes with the largest at 88,298:
+a 200,000-byte bound left two entries and 164,834 bytes. A 60,000-byte bound
+emptied the cache, which is correct — the largest single entry exceeds that
+budget on its own.
+
 Path safety, all returning 404 with no content leaked:
 
 ```
@@ -343,14 +413,11 @@ deliberate — see the note on `Validate` vs `CheckEncoders` below.
 
 ## Not built yet
 
-- `watermark`, `sharpen`, `pixelate`, `trim`, `indexcrop`, `circle`,
-  `rounded-corners`, `bright`, `contrast`. The pipeline covers the first five;
-  the last four have no equivalent in it and would need new vips calls.
-  Everything already supported needs only a parameter translation in
-  `ossprocess.Chain.Apply`, the same shape as `resize.go` and `crop.go`.
-- Cache eviction. Entries are keyed by source path + size + mtime + chain, so
-  they invalidate themselves when a source changes, but nothing prunes the
-  directory. A `find -atime` cron is enough to start.
+- `pixelate` and `trim`: the pipeline has both, they need only a parameter
+  translation in `ossprocess.Chain.Apply`, the same shape as `resize.go`.
+- `circle`, `rounded-corners`, `bright`, `contrast`: no equivalent in the
+  pipeline. These need new libvips calls exposed through `internal/vips`.
+- `watermark,text_`: needs a text renderer, see above.
 - Request signing. `internal/security` carries imgproxy's implementation and it
   is wired to `ISTORE_KEY` / `ISTORE_SALT`, but nothing calls it: with a local
   root and a path-traversal-safe resolver there is no URL to forge. That changes

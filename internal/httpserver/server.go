@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/kane/istore/internal/auximageprovider"
 	"github.com/kane/istore/internal/cache"
 	"github.com/kane/istore/internal/imagedata"
 	"github.com/kane/istore/internal/imageinfo"
@@ -47,6 +48,8 @@ type Config struct {
 	ProcessTimeout time.Duration
 	// CacheControl is sent with successful image responses.
 	CacheControl string
+	// Evict bounds the disk cache. Zero Interval leaves it unbounded.
+	Evict cache.EvictConfig
 }
 
 // NewDefaultConfig returns usable defaults.
@@ -70,11 +73,29 @@ type Server struct {
 	// extra steps.
 	sem    chan struct{}
 	flight singleflight.Group
+
+	// watermarks is handed to the processor at construction time; it reads the
+	// requested object key out of each request's options.
+	watermarks *watermarkProvider
+
+	stop chan struct{}
 }
 
-// New builds a Server. proc must already be constructed with a validated config.
-func New(cfg Config, proc *processing.Processor) (*Server, error) {
+// New builds a Server.
+//
+// newProcessor is called with the watermark provider once the source root is
+// open, because the provider needs the resolver: an OSS watermark names an
+// object key, and that key goes through the same traversal and symlink checks
+// as the image being served.
+func New(cfg Config, newProcessor func(auximageprovider.Provider) (*processing.Processor, error)) (*Server, error) {
+	stop := make(chan struct{})
 	src, err := source.NewLocal(cfg.Root)
+	if err != nil {
+		return nil, err
+	}
+
+	watermarks := newWatermarkProvider(src)
+	proc, err := newProcessor(watermarks)
 	if err != nil {
 		return nil, err
 	}
@@ -84,6 +105,7 @@ func New(cfg Config, proc *processing.Processor) (*Server, error) {
 		if c, err = cache.NewDisk(cfg.CacheDir); err != nil {
 			return nil, err
 		}
+		c.StartEvictor(cfg.Evict, stop)
 	}
 
 	n := cfg.Concurrency
@@ -92,12 +114,20 @@ func New(cfg Config, proc *processing.Processor) (*Server, error) {
 	}
 
 	return &Server{
-		cfg:   cfg,
-		src:   src,
-		cache: c,
-		proc:  proc,
-		sem:   make(chan struct{}, n),
+		cfg:        cfg,
+		src:        src,
+		cache:      c,
+		proc:       proc,
+		sem:        make(chan struct{}, n),
+		watermarks: watermarks,
+		stop:       stop,
 	}, nil
+}
+
+// Close stops the cache evictor and releases cached watermarks.
+func (s *Server) Close() error {
+	close(s.stop)
+	return s.watermarks.Close()
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -252,11 +282,21 @@ func (s *Server) serveProcessed(w http.ResponseWriter, r *http.Request, chain *o
 		return
 	}
 
+	// format,auto makes the output depend on the client, so the negotiated
+	// choice has to be part of the cache key — otherwise the first visitor's
+	// format is served to everyone.
+	auto := chain.IsAutoFormat()
+	accept := ""
+	if auto {
+		accept = acceptKey(r.Header.Get("Accept"))
+		varyOnAccept(w)
+	}
+
 	key := cache.Key{
 		SourcePath: path,
 		SourceSize: st.Size(),
 		SourceMod:  st.ModTime().UnixNano(),
-		Chain:      raw,
+		Chain:      raw + "\x00" + accept,
 	}
 
 	if s.cache != nil {
@@ -283,7 +323,7 @@ func (s *Server) serveProcessed(w http.ResponseWriter, r *http.Request, chain *o
 	// Collapse duplicate work: a page referencing the same transform twelve
 	// times should cost one encode, not twelve.
 	res, err, shared := s.flight.Do(key.Hash(), func() (any, error) {
-		return s.process(r.Context(), path, chain, srcW, srcH)
+		return s.process(r.Context(), path, chain, srcW, srcH, r.Header.Get("Accept"))
 	})
 	if err != nil {
 		s.failProcess(w, r, err)
@@ -350,7 +390,7 @@ func (s *Server) sourceSize(path string) (int, int, error) {
 	return info.ImageWidth, info.ImageHeight, nil
 }
 
-func (s *Server) process(ctx context.Context, path string, chain *ossprocess.Chain, srcW, srcH int) (*processed, error) {
+func (s *Server) process(ctx context.Context, path string, chain *ossprocess.Chain, srcW, srcH int, accept string) (*processed, error) {
 	if s.cfg.ProcessTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, s.cfg.ProcessTimeout)
@@ -366,6 +406,9 @@ func (s *Server) process(ctx context.Context, path string, chain *ossprocess.Cha
 	o := options.New()
 	if err := chain.Apply(o, srcW, srcH); err != nil {
 		return nil, err
+	}
+	if chain.IsAutoFormat() {
+		applyAutoFormat(o, accept)
 	}
 
 	s.acquire()
@@ -466,6 +509,18 @@ func (s *Server) failSource(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func (s *Server) failProcess(w http.ResponseWriter, r *http.Request, err error) {
+	// An argument the parser could only check against the source (indexcrop's
+	// slice index) is still the caller's mistake, so it gets 400 and the real
+	// message rather than a generic "could not be processed".
+	var argErr ossprocess.ArgumentError
+	if errors.As(err, &argErr) {
+		s.fail(w, r, http.StatusBadRequest, "InvalidArgument", argErr.Error())
+		return
+	}
+	if errors.Is(err, ErrBadWatermark) {
+		s.fail(w, r, http.StatusBadRequest, "InvalidArgument", ErrBadWatermark.Error())
+		return
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		s.fail(w, r, http.StatusGatewayTimeout, "RequestTimeout", "image processing timed out")
 		return

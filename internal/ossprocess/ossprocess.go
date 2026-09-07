@@ -10,16 +10,16 @@
 // The first segment names the service; only "image" exists here. Parameters are
 // mostly `key_value` pairs, but a few actions (format) take a bare value.
 //
-// iStore implements `resize`, `crop`, `rotate`, `auto-orient`, `blur`,
-// `quality`, `format` and `info`. Everything else
+// iStore implements `resize`, `crop`, `indexcrop`, `rotate`, `auto-orient`,
+// `blur`, `sharpen`, `watermark`, `quality`, `format` and `info`. Everything else
 // parses into a
 // generic Action and is rejected by Chain.Validate with a clear message, rather
 // than being silently ignored — an unrecognised transform that returns the
 // original image is worse than an error, because the caller cannot tell.
 //
-// The engine underneath (ported from imgproxy) also supports watermarking,
-// sharpening, pixelation, trimming and padding. Adding them here is a matter of
-// translating parameters into options keys; see Chain.Apply.
+// The engine underneath (ported from imgproxy) also supports pixelation,
+// trimming and padding. Adding them here is a matter of translating parameters
+// into options keys; see Chain.Apply.
 package ossprocess
 
 import (
@@ -35,6 +35,24 @@ import (
 
 // QueryKey is the query-string parameter carrying the process chain.
 const QueryKey = "x-oss-process"
+
+// ArgumentError marks a failure caused by the request's own arguments rather
+// than by the image or the server.
+//
+// Most argument checking happens in Validate, before any work starts, and the
+// HTTP layer answers those with 400 directly. A few checks can only run once the
+// source dimensions are known — indexcrop's slice index is the current one — and
+// those surface from Apply, deep inside processing. Without a marker they would
+// be reported as "the image could not be processed", which tells the caller
+// nothing about the mistake they actually made.
+type ArgumentError struct{ Err error }
+
+func (e ArgumentError) Error() string { return e.Err.Error() }
+func (e ArgumentError) Unwrap() error { return e.Err }
+
+func argErrorf(format string, args ...any) error {
+	return ArgumentError{fmt.Errorf(format, args...)}
+}
 
 // Action is one link of the chain: a name plus its raw parameters.
 type Action struct {
@@ -154,6 +172,18 @@ func (c *Chain) Validate() error {
 			if _, err := parseBlur(a); err != nil {
 				return err
 			}
+		case "sharpen":
+			if _, err := parseSharpen(a); err != nil {
+				return err
+			}
+		case "indexcrop":
+			if _, err := parseIndexCrop(a); err != nil {
+				return err
+			}
+		case "watermark":
+			if _, err := parseWatermark(a); err != nil {
+				return err
+			}
 		default:
 			return fmt.Errorf("unsupported action %q", a.Name)
 		}
@@ -186,6 +216,26 @@ func OSSFormatName(t imagetype.Type) string {
 	return t.String()
 }
 
+// FormatAuto is the sentinel `format,auto` leaves in the chain: pick the best
+// format the client said it accepts.
+//
+// OSS has no `auto`; this is an iStore addition. It exists because the
+// alternative is what the caller would otherwise write by hand — a <picture>
+// element with an AVIF <source> and a JPEG fallback — duplicated at every call
+// site and stale the moment browser support moves.
+const FormatAuto = "auto"
+
+// IsAutoFormat reports whether the chain asks for content-negotiated output.
+func (c *Chain) IsAutoFormat() bool {
+	for _, a := range c.Actions {
+		if a.Name == "format" && len(a.Params) == 1 &&
+			strings.ToLower(a.Params[0].Value) == FormatAuto {
+			return true
+		}
+	}
+	return false
+}
+
 // format resolves the target type of a `format` action.
 func (a Action) format() (imagetype.Type, error) {
 	if len(a.Params) != 1 {
@@ -199,6 +249,10 @@ func (a Action) format() (imagetype.Type, error) {
 	}
 
 	name := strings.ToLower(p.Value)
+	if name == FormatAuto {
+		// Resolved from the request's Accept header, not here.
+		return imagetype.Unknown, nil
+	}
 	t, ok := ossFormatNames[name]
 	if !ok {
 		return imagetype.Unknown, fmt.Errorf("unsupported format %q", name)
@@ -220,6 +274,9 @@ func (c *Chain) CheckEncoders() error {
 		if err != nil {
 			return err
 		}
+		if t == imagetype.Unknown {
+			continue // format,auto: the server picks a format libvips can save
+		}
 		if !vips.SupportsSave(t) {
 			return fmt.Errorf("format %q cannot be produced by this build of libvips", strings.ToLower(a.Params[0].Value))
 		}
@@ -229,11 +286,11 @@ func (c *Chain) CheckEncoders() error {
 
 // NeedsSourceSize reports whether Apply requires the source dimensions.
 //
-// Only resize does, and the caller pays a header read for it — worth avoiding
-// on a plain `format,avif`, which is the common case.
+// resize and indexcrop do; the caller pays a header read for them, which is
+// worth avoiding on a plain `format,avif`, the common case.
 func (c *Chain) NeedsSourceSize() bool {
 	for _, a := range c.Actions {
-		if a.Name == "resize" {
+		if a.Name == "resize" || a.Name == "indexcrop" {
 			return true
 		}
 	}
@@ -253,7 +310,11 @@ func (c *Chain) Apply(o *options.Options, srcW, srcH int) error {
 			if err != nil {
 				return err
 			}
-			o.Set(keys.Format, t)
+			// format,auto leaves Format unset; the server sets the Prefer* keys
+			// from the Accept header instead, and the pipeline picks from those.
+			if t != imagetype.Unknown {
+				o.Set(keys.Format, t)
+			}
 
 		case "resize":
 			r, err := parseResize(a)
@@ -296,6 +357,29 @@ func (c *Chain) Apply(o *options.Options, srcW, srcH int) error {
 				return err
 			}
 			o.Set(keys.Blur, sigma)
+
+		case "sharpen":
+			sigma, err := parseSharpen(a)
+			if err != nil {
+				return err
+			}
+			o.Set(keys.Sharpen, sigma)
+
+		case "indexcrop":
+			ic, err := parseIndexCrop(a)
+			if err != nil {
+				return err
+			}
+			if err := ic.apply(o, srcW, srcH); err != nil {
+				return err
+			}
+
+		case "watermark":
+			wm, err := parseWatermark(a)
+			if err != nil {
+				return err
+			}
+			wm.apply(o)
 
 		default:
 			return fmt.Errorf("unsupported action %q", a.Name)
