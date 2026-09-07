@@ -1,0 +1,61 @@
+iStore
+Copyright (c) 2026 Kane
+
+================================================================================
+Portions of this software are derived from imgproxy
+================================================================================
+
+The following directories contain source code copied from, or derived from,
+the imgproxy project:
+
+    internal/processing/
+    internal/options/
+    internal/security/
+    internal/vips/          (Go and C sources)
+    internal/imagetype/
+    internal/imagemeta/
+    internal/auximageprovider/
+    internal/env/
+    internal/bufreader/
+    internal/errctx/
+    internal/ioutil/
+    internal/imath/
+    internal/ensure/
+
+    imgproxy
+    https://github.com/imgproxy/imgproxy
+    Copyright (c) imgproxy contributors
+    Licensed under the Apache License, Version 2.0
+
+A copy of the Apache License, Version 2.0 is provided in LICENSE-imgproxy.
+
+Modifications made by iStore are described in README.md under
+"What was changed relative to imgproxy". In summary:
+
+  * internal/vips no longer depends on imgproxy's `imagedata` and `options`
+    packages; it uses iStore's own internal/imagedata and takes save options
+    from process configuration.
+  * internal/env dropped aws.go, gcp.go and load.go, which resolve values via
+    AWS Secrets Manager, AWS SSM and GCP Secret Manager.
+  * imgproxy's `server` package was replaced by internal/timeout, which carries
+    the single function (CheckTimeout) that the pipeline used.
+  * imgproxy's `options/parser` package was removed; iStore parses the
+    x-oss-process grammar instead.
+  * SVG support was removed: internal/imagetype/svg.go (detection) and
+    imgproxy's processing/svg (sanitizing), both of which need `xmlparser`.
+  * auximageprovider loads auxiliary images from disk only, not over HTTP.
+  * Environment variable prefix changed from IMGPROXY_ to ISTORE_.
+  * Tests and test helpers were not carried over.
+
+================================================================================
+Third-party libraries linked at build time
+================================================================================
+
+libvips
+  Copyright (C) 1991-2024 the libvips contributors
+  Licensed under the GNU Lesser General Public License, version 2.1 or later
+  https://github.com/libvips/libvips
+
+  iStore links against libvips dynamically via cgo. libvips in turn loads
+  libheif, libaom/libdav1d, libjxl, libwebp, libjpeg-turbo, libpng and others,
+  each under its own license. See your libvips build for the exact set.

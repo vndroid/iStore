@@ -1,0 +1,21 @@
+// auximagedata exposes an interface for retreiving auxiliary images
+// such as watermarks and fallbacks. Default implementation stores those in memory.
+
+package auximageprovider
+
+import (
+	"context"
+	"net/http"
+
+	"github.com/kane/istore/internal/imagedata"
+	"github.com/kane/istore/internal/options"
+)
+
+// Provider is an interface that provides image data and headers based
+// on options. It is used to retrieve WatermarkImage and FallbackImage.
+type Provider interface {
+	Get(ctx context.Context, opts *options.Options) (imagedata.ImageData, http.Header, error)
+
+	// Close releases the image data held by the provider.
+	Close() error
+}
