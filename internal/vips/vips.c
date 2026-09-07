@@ -4,6 +4,13 @@
 #define VIPS_SCRGB_ALPHA_FIXED \
   (VIPS_MAJOR_VERSION > 8 || (VIPS_MAJOR_VERSION == 8 && VIPS_MINOR_VERSION >= 15))
 
+// jxlload gained animation support — and with it the `page` and `n` load
+// options — in libvips 8.16. Passing them to an older loader is not ignored:
+// vips_jxlload_source fails outright with "no property named `page'", so every
+// JXL *source* is unreadable on 8.15 even though JXL output works fine.
+#define VIPS_JXL_HAS_PAGES \
+  (VIPS_MAJOR_VERSION > 8 || (VIPS_MAJOR_VERSION == 8 && VIPS_MINOR_VERSION >= 16))
+
 #define VIPS_META_PALETTE_BITS_DEPTH "palette-bit-depth"
 
 #define IMGPROXY_META_ICC_NAME "imgproxy-icc-profile"
@@ -88,16 +95,29 @@ vips_jpegload_source_go(VipsImgproxySource *source, VipsImage **out, ImgproxyLoa
           NULL);
 }
 
-// loads xjl from source
+// loads jxl from source
 int
 vips_jxlload_source_go(VipsImgproxySource *source, VipsImage **out, ImgproxyLoadOptions lo)
 {
+#if VIPS_JXL_HAS_PAGES
   return vips_jxlload_source(
       VIPS_SOURCE(source), out,
       "access", VIPS_ACCESS_SEQUENTIAL,
       "page", lo.Page,
       "n", lo.Pages,
       NULL);
+#else
+  // Pre-8.16 this loader has no concept of pages, so it always yields the first
+  // frame. That is consistent rather than wrong: without page metadata
+  // Image.IsAnimated() stays false, so the animated path is never entered and
+  // nothing downstream expects frames that are not there.
+  (void) lo;
+
+  return vips_jxlload_source(
+      VIPS_SOURCE(source), out,
+      "access", VIPS_ACCESS_SEQUENTIAL,
+      NULL);
+#endif
 }
 
 int
