@@ -311,7 +311,8 @@ internal/timeout/        the one function iStore needed from imgproxy's server p
 ## Build requirements
 
 - Go 1.24+
-- libvips 8.13+ with, at minimum: libjpeg, libpng, libwebp
+- libvips 8.13+ with, at minimum: libjpeg, libpng, libwebp (8.16+ only if you
+  need to *read* animated JPEG XL — see "Not built yet")
 - for AVIF output: libheif built with an AV1 **encoder** (aom, SVT-AV1 or rav1e)
 - for JPEG XL output: libjxl
 
@@ -602,13 +603,14 @@ are partial, and one source format does not load on this build.
   spelling. `extend` is already reachable through `resize,m_pad`; the other two
   would need an iStore-invented action name.
 
-**Known defect**
+**Version-dependent**
 
-- **JPEG XL does not load on libvips 8.15.** `vips_jxlload_source_go` passes
-  `page` and `n`, and `jxlload_source` gained those only in libvips 8.16, so a
-  JXL *source* fails with `jxlload_source: no property named 'page'` — reported
-  as 422. JXL *output* is unaffected. Fix is either dropping the two options
-  from that one shim or raising the stated libvips floor.
+- **Animated JPEG XL needs libvips 8.16.** `jxlload` gained animation — and with
+  it the `page`/`n` load options — in 8.16. `vips_jxlload_source_go` passes them
+  only when built against 8.16 or newer; on older libvips it loads a JXL as a
+  single frame, which is self-consistent because that loader also sets no page
+  metadata, so `IsAnimated()` stays false and the animated path is never taken.
+  Still images and JXL output are unaffected either way.
 
 ## Two design notes worth keeping
 
