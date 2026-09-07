@@ -1552,3 +1552,148 @@ vips_round_corners_go(VipsImage *in, VipsImage **out, double radius)
 
   return ret;
 }
+
+// vips_rotate_go rotates by an arbitrary angle, growing the canvas to hold the
+// result and leaving the exposed corners transparent.
+//
+// This is not vips_rot (which the Image.Rotate binding uses): that one is a
+// lossless transpose and only accepts multiples of 90. An arbitrary angle is a
+// resample, so it needs an interpolator and a background, and the output is the
+// bounding box of the rotated rectangle rather than the input size.
+//
+// Alpha is added first when the image has none, so the corners come out
+// transparent instead of black. A format that cannot carry alpha gets them
+// flattened to the background colour later in the pipeline, which is what OSS
+// does too — white corners on a JPEG, transparent ones on a PNG.
+int
+vips_rotate_go(VipsImage *in, VipsImage **out, double angle)
+{
+  VipsImage *base = vips_image_new();
+  VipsImage **t = (VipsImage **) vips_object_local_array(VIPS_OBJECT(base), 2);
+
+  VipsImage *img = in;
+
+  if (!vips_image_hasalpha(in)) {
+    if (vips_addalpha(in, &t[0], NULL)) {
+      VIPS_UNREF(base);
+      return 1;
+    }
+
+    img = t[0];
+  }
+
+  double bg[4] = { 0.0, 0.0, 0.0, 0.0 };
+  VipsArrayDouble *background = vips_array_double_new(bg, 4);
+
+  int ret = vips_rotate(img, out, angle, "background", background, NULL);
+
+  vips_area_unref(VIPS_AREA(background));
+  VIPS_UNREF(base);
+
+  return ret;
+}
+
+// vips_ensure_alpha_go adds an opaque alpha channel if the image has none.
+//
+// Needed before embedding an image into a larger transparent canvas: without an
+// alpha band, VIPS_EXTEND_BLACK fills the margin with opaque black instead of
+// nothing.
+int
+vips_ensure_alpha_go(VipsImage *in, VipsImage **out)
+{
+  if (vips_image_hasalpha(in))
+    return vips_copy(in, out, NULL);
+
+  return vips_addalpha(in, out, NULL);
+}
+
+// vips_text_go renders a line of text as a coloured RGBA image, optionally with
+// a drop shadow.
+//
+// libvips renders text through Pango, which returns a single-band coverage mask
+// rather than a picture: the colour is ours to supply. So the mask becomes the
+// alpha channel of a constant-colour image, which is also what makes an
+// arbitrary text colour free.
+//
+// The shadow is a blurred, offset copy of the same mask in black, composited
+// underneath. OSS's `shadow_` gives only its transparency; the offset and blur
+// are the caller's calibration, scaled from the font size.
+int
+vips_text_go(VipsImage **out, const char *text, const char *font, int dpi,
+    RGB color, double shadow_opacity, int shadow_offset, double shadow_sigma)
+{
+  VipsImage *base = vips_image_new();
+  VipsImage **t = (VipsImage **) vips_object_local_array(VIPS_OBJECT(base), 20);
+
+  if (vips_text(&t[0], text, "font", font, "dpi", dpi, "align", VIPS_ALIGN_LOW, NULL)) {
+    VIPS_UNREF(base);
+    return 1;
+  }
+
+  VipsImage *mask = t[0];
+
+  int w = mask->Xsize;
+  int h = mask->Ysize;
+
+  double ones[3] = { 0.0, 0.0, 0.0 };
+  double rgb[3] = { (double) color.r, (double) color.g, (double) color.b };
+
+  gboolean with_shadow = shadow_opacity > 0.0 && shadow_offset >= 0;
+
+  int cw = w + (with_shadow ? shadow_offset : 0);
+  int ch = h + (with_shadow ? shadow_offset : 0);
+
+  // Constant-colour plane the size of the finished image: black scaled by zero
+  // plus the colour as the offset.
+  if (
+      vips_black(&t[1], cw, ch, "bands", 3, NULL) ||
+      vips_linear(t[1], &t[2], ones, rgb, 3, NULL) ||
+      vips_cast(t[2], &t[3], VIPS_FORMAT_UCHAR, NULL) ||
+      vips_copy(t[3], &t[4], "interpretation", VIPS_INTERPRETATION_sRGB, NULL) ||
+      // The glyph coverage, placed at the top left of that plane.
+      vips_embed(mask, &t[5], 0, 0, cw, ch, "extend", VIPS_EXTEND_BLACK, NULL) ||
+      vips_bandjoin2(t[4], t[5], &t[16], NULL) ||
+      // Re-declare the interpretation: bandjoin turns a 3-band sRGB image into
+      // a 4-band one and settles on "multiband", which vips_composite2 then
+      // refuses to convert into a compositing space.
+      vips_copy(t[16], &t[6], "interpretation", VIPS_INTERPRETATION_sRGB, NULL)) {
+    VIPS_UNREF(base);
+    return 1;
+  }
+
+  if (!with_shadow) {
+    int ret = vips_copy(t[6], out, NULL);
+    VIPS_UNREF(base);
+    return ret;
+  }
+
+  double black[3] = { 0.0, 0.0, 0.0 };
+
+  if (
+      // Shadow coverage: the same mask, blurred, scaled by the requested
+      // opacity, and offset down and right.
+      vips_gaussblur(mask, &t[7], shadow_sigma, NULL) ||
+      // shadow_opacity is a 0..1 factor, so the blurred coverage keeps its
+      // shape and only loses weight.
+      vips_linear1(t[7], &t[8], shadow_opacity, 0.0, NULL) ||
+      vips_cast(t[8], &t[9], VIPS_FORMAT_UCHAR, NULL) ||
+      vips_embed(t[9], &t[10], shadow_offset, shadow_offset, cw, ch,
+          "extend", VIPS_EXTEND_BLACK, NULL) ||
+      vips_black(&t[11], cw, ch, "bands", 3, NULL) ||
+      vips_linear(t[11], &t[12], ones, black, 3, NULL) ||
+      vips_cast(t[12], &t[13], VIPS_FORMAT_UCHAR, NULL) ||
+      vips_bandjoin2(t[13], t[10], &t[17], NULL) ||
+      vips_copy(t[17], &t[14], "interpretation", VIPS_INTERPRETATION_sRGB, NULL) ||
+      // Text over shadow.
+      vips_composite2(t[14], t[6], &t[15], VIPS_BLEND_MODE_OVER,
+          "compositing_space", VIPS_INTERPRETATION_sRGB, NULL)) {
+    VIPS_UNREF(base);
+    return 1;
+  }
+
+  int ret = vips_copy(t[15], out, NULL);
+
+  VIPS_UNREF(base);
+
+  return ret;
+}

@@ -175,6 +175,18 @@ func (po ProcessingOptions) Pixelate() int {
 }
 
 // Brightness is added to every colour channel on the 0..255 scale. 0 is neutral.
+// RotateFree is an arbitrary rotation angle in degrees, 0 when none was asked
+// for. Distinct from Rotate, which is limited to multiples of 90.
+func (po ProcessingOptions) RotateFree() float64 {
+	return po.GetFloat(keys.RotateFree, 0.0)
+}
+
+// RotateFreeEnabled reports whether a rotation that exposes transparent corners
+// was requested.
+func (po ProcessingOptions) RotateFreeEnabled() bool {
+	return po.RotateFree() != 0
+}
+
 func (po ProcessingOptions) Brightness() float64 {
 	return po.GetFloat(keys.Brightness, 0.0)
 }

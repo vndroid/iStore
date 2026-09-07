@@ -608,6 +608,79 @@ func (img *Image) Rotate(angle int) error {
 	return nil
 }
 
+// EnsureAlpha adds an opaque alpha channel if the image has none, so that
+// embedding it into a larger canvas leaves the margin transparent.
+func (img *Image) EnsureAlpha() error {
+	var tmp *C.VipsImage
+
+	if C.vips_ensure_alpha_go(img.VipsImage, &tmp) != 0 {
+		return Error()
+	}
+
+	img.swapAndUnref(tmp)
+
+	return nil
+}
+
+// TextOptions describes one rendered line of text.
+type TextOptions struct {
+	Text string
+	// Font is a Pango font description, e.g. "sans 40" or "Noto Sans CJK SC 40".
+	// The size in it is in points, and callers that want pixels should render at
+	// 72 dpi, where the two coincide.
+	Font  string
+	DPI   int
+	Color color.RGB
+
+	// ShadowOpacity is 0 for no shadow, otherwise a 0..1 factor applied to the
+	// blurred coverage. Offset and Sigma are in pixels.
+	ShadowOpacity float64
+	ShadowOffset  int
+	ShadowSigma   float64
+}
+
+// NewText renders text into a new RGBA image.
+//
+// libvips renders through Pango, which produces a coverage mask rather than a
+// picture; the colour is supplied here and the mask becomes the alpha channel.
+// Which font names resolve is a property of the machine's fontconfig, not of
+// this package.
+func NewText(o TextOptions) (*Image, error) {
+	cText := C.CString(o.Text)
+	defer C.free(unsafe.Pointer(cText))
+
+	cFont := C.CString(o.Font)
+	defer C.free(unsafe.Pointer(cFont))
+
+	var tmp *C.VipsImage
+
+	if C.vips_text_go(
+		&tmp, cText, cFont, C.int(o.DPI), cRGB(o.Color),
+		C.double(o.ShadowOpacity), C.int(o.ShadowOffset), C.double(o.ShadowSigma),
+	) != 0 {
+		return nil, Error()
+	}
+
+	return &Image{VipsImage: tmp}, nil
+}
+
+// RotateAny rotates by an arbitrary angle in degrees, clockwise.
+//
+// Unlike Rotate, which is a lossless transpose limited to multiples of 90, this
+// resamples: the canvas grows to the bounding box of the rotated rectangle and
+// the corners it exposes are transparent.
+func (img *Image) RotateAny(degrees float64) error {
+	var tmp *C.VipsImage
+
+	if C.vips_rotate_go(img.VipsImage, &tmp, C.double(degrees)) != 0 {
+		return Error()
+	}
+
+	img.swapAndUnref(tmp)
+
+	return nil
+}
+
 func (img *Image) FlipHorizontal() error {
 	var tmp *C.VipsImage
 

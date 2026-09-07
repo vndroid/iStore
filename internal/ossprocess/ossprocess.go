@@ -381,7 +381,14 @@ func (c *Chain) Apply(o *options.Options, srcW, srcH int) error {
 			if err != nil {
 				return err
 			}
-			o.Set(keys.Rotate, deg)
+			// Multiples of 90 keep the lossless path; anything else needs the
+			// resampling one, which is a different libvips call and a different
+			// key. See parseRotate.
+			if deg%90 == 0 {
+				o.Set(keys.Rotate, deg)
+			} else {
+				o.Set(keys.RotateFree, float64(deg))
+			}
 
 		case "auto-orient":
 			on, err := parseAutoOrient(a)

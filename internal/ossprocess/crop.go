@@ -124,11 +124,14 @@ func (c *Crop) apply(o *options.Options) {
 
 // ---------------------------------------------------------------- rotate etc.
 
-// parseRotate reads `image/rotate,<degrees>`.
+// parseRotate reads `image/rotate,<degrees>`, clockwise, 0..360 as in OSS.
 //
-// OSS accepts 0..360; libvips rotates losslessly only by multiples of 90, and
-// the pipeline's Rotate option is defined in those terms, so anything else is
-// refused rather than silently rounded.
+// A multiple of 90 is a lossless transpose and keeps the frame; any other angle
+// is a resample that grows the canvas to the bounding box of the rotated
+// rectangle and leaves the new corners transparent — or filled with the
+// background colour when the output format has no alpha, which is what OSS does
+// too. The two take different libvips calls, so Apply routes them to different
+// option keys.
 func parseRotate(a Action) (int, error) {
 	if len(a.Params) != 1 {
 		return 0, fmt.Errorf("\"rotate\" takes exactly one value, e.g. rotate,90")
@@ -143,9 +146,6 @@ func parseRotate(a Action) (int, error) {
 	}
 	if v < 0 || v > 360 {
 		return 0, fmt.Errorf("\"rotate\" must be between 0 and 360, got %d", v)
-	}
-	if v%90 != 0 {
-		return 0, fmt.Errorf("\"rotate\" must be a multiple of 90, got %d", v)
 	}
 	return v % 360, nil
 }

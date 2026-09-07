@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"github.com/kane/istore/internal/imagetype"
 )
@@ -43,6 +44,11 @@ type Info struct {
 	ResolutionUnit int    // EXIF semantics: 1 none, 2 inch, 3 cm
 	XResolution    string // rational, e.g. "72/1"
 	YResolution    string
+
+	// Exif holds the source's EXIF tags by their standard names, nil when the
+	// image carries none. OSS merges these into the same flat object as the
+	// fields above, so MarshalJSON does too.
+	Exif map[string]string
 }
 
 // value is the {"value": "..."} wrapper OSS uses for every field.
@@ -50,21 +56,22 @@ type value struct {
 	Value string `json:"value"`
 }
 
-// MarshalJSON renders the OSS-compatible shape.
+// MarshalJSON renders the OSS-compatible shape: one flat object of
+// {"value": "..."} entries, basic fields and EXIF tags together.
 //
-// Keys are emitted by encoding/json in struct order; OSS returns them
-// alphabetically, and the order below matches so a byte comparison against a
-// real OSS response lines up.
+// A map rather than a struct because the EXIF tag set is not known at compile
+// time. encoding/json sorts map keys, which is the order OSS uses and the order
+// the previous struct spelled out by hand — so an image without EXIF marshals
+// byte for byte as before.
 func (i Info) MarshalJSON() ([]byte, error) {
-	type ossInfo struct {
-		FileSize       value `json:"FileSize"`
-		Format         value `json:"Format"`
-		FrameCount     value `json:"FrameCount"`
-		ImageHeight    value `json:"ImageHeight"`
-		ImageWidth     value `json:"ImageWidth"`
-		ResolutionUnit value `json:"ResolutionUnit"`
-		XResolution    value `json:"XResolution"`
-		YResolution    value `json:"YResolution"`
+	out := make(map[string]value, 8+len(i.Exif))
+
+	// EXIF first, so the measured fields below always win. ImageWidth and
+	// friends are read from the container itself; an EXIF block claiming
+	// something else is either stale or lying, and either way the caller wants
+	// the real dimensions.
+	for k, v := range i.Exif {
+		out[k] = value{v}
 	}
 
 	format := i.Format.String()
@@ -72,18 +79,16 @@ func (i Info) MarshalJSON() ([]byte, error) {
 		format = "jpg" // OSS spells it jpg
 	}
 
-	o := ossInfo{
-		FileSize:       value{strconv.FormatInt(i.FileSize, 10)},
-		Format:         value{format},
-		FrameCount:     value{strconv.Itoa(i.FrameCount)},
-		ImageHeight:    value{strconv.Itoa(i.ImageHeight)},
-		ImageWidth:     value{strconv.Itoa(i.ImageWidth)},
-		ResolutionUnit: value{strconv.Itoa(i.ResolutionUnit)},
-		XResolution:    value{i.XResolution},
-		YResolution:    value{i.YResolution},
-	}
+	out["FileSize"] = value{strconv.FormatInt(i.FileSize, 10)}
+	out["Format"] = value{format}
+	out["FrameCount"] = value{strconv.Itoa(i.FrameCount)}
+	out["ImageHeight"] = value{strconv.Itoa(i.ImageHeight)}
+	out["ImageWidth"] = value{strconv.Itoa(i.ImageWidth)}
+	out["ResolutionUnit"] = value{strconv.Itoa(i.ResolutionUnit)}
+	out["XResolution"] = value{i.XResolution}
+	out["YResolution"] = value{i.YResolution}
 
-	return marshalOSS(o)
+	return marshalOSS(out)
 }
 
 // Read extracts info from r, which should be positioned at the start of the
@@ -198,7 +203,7 @@ func readJPEG(b []byte, info *Info) error {
 			info.YResolution = ratio(binary.BigEndian.Uint16(seg[10:]))
 
 		case marker == 0xE1 && len(seg) >= 6 && string(seg[:6]) == "Exif\x00\x00":
-			readEXIFResolution(seg[6:], info)
+			readEXIF(seg[6:], info)
 
 		case marker == 0xDA: // start of scan; no header left to find
 			return ErrHeaderTooShort
@@ -217,63 +222,30 @@ func ratio(n uint16) string {
 	return strconv.Itoa(int(n)) + "/1"
 }
 
-// readEXIFResolution pulls XResolution (0x011A), YResolution (0x011B) and
-// ResolutionUnit (0x0128) out of IFD0. Failures leave the defaults in place —
-// resolution is decoration here, not the answer the caller came for.
-func readEXIFResolution(b []byte, info *Info) {
-	if len(b) < 8 {
+// readEXIF parses an EXIF block and records both the full tag set and the three
+// resolution fields the basic response reports.
+//
+// Resolution comes out of the same walk rather than a second one: XResolution,
+// YResolution and ResolutionUnit are ordinary IFD0 tags, and having two readers
+// disagree about them would be worse than either. Failures leave the defaults
+// in place — resolution is decoration here, not the answer the caller came for.
+func readEXIF(b []byte, info *Info) {
+	tags := parseEXIF(b)
+	if tags == nil {
 		return
 	}
 
-	var bo binary.ByteOrder
-	switch string(b[:2]) {
-	case "II":
-		bo = binary.LittleEndian
-	case "MM":
-		bo = binary.BigEndian
-	default:
-		return
-	}
-	if bo.Uint16(b[2:]) != 0x002A {
-		return
-	}
+	info.Exif = tags
 
-	off := int(bo.Uint32(b[4:]))
-	if off+2 > len(b) {
-		return
+	if v, ok := tags["XResolution"]; ok && strings.Contains(v, "/") {
+		info.XResolution = v
 	}
-	count := int(bo.Uint16(b[off:]))
-	off += 2
-
-	for i := 0; i < count; i++ {
-		e := off + i*12
-		if e+12 > len(b) {
-			return
-		}
-		tag := bo.Uint16(b[e:])
-		typ := bo.Uint16(b[e+2:])
-		valOff := int(bo.Uint32(b[e+8:]))
-
-		switch tag {
-		case 0x011A, 0x011B: // X/YResolution, RATIONAL
-			if typ != 5 || valOff+8 > len(b) {
-				continue
-			}
-			num := bo.Uint32(b[valOff:])
-			den := bo.Uint32(b[valOff+4:])
-			if den == 0 {
-				continue
-			}
-			s := strconv.FormatUint(uint64(num), 10) + "/" + strconv.FormatUint(uint64(den), 10)
-			if tag == 0x011A {
-				info.XResolution = s
-			} else {
-				info.YResolution = s
-			}
-		case 0x0128: // ResolutionUnit, SHORT, stored inline
-			if typ == 3 {
-				info.ResolutionUnit = int(bo.Uint16(b[e+8:]))
-			}
+	if v, ok := tags["YResolution"]; ok && strings.Contains(v, "/") {
+		info.YResolution = v
+	}
+	if v, ok := tags["ResolutionUnit"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			info.ResolutionUnit = n
 		}
 	}
 }
@@ -302,6 +274,11 @@ func readPNG(b []byte, info *Info) error {
 		if typ == "acTL" && pos+8+8 <= len(b) {
 			// APNG animation control: frame count is the first field.
 			info.FrameCount = int(binary.BigEndian.Uint32(b[pos+8:]))
+		}
+		if typ == "eXIf" && l > 0 && pos+8+l <= len(b) {
+			// PNG carries EXIF as a bare TIFF block, without JPEG's
+			// "Exif\0\0" prefix.
+			readEXIF(b[pos+8:pos+8+l], info)
 		}
 		if typ == "pHYs" && pos+8+9 <= len(b) {
 			x := binary.BigEndian.Uint32(b[pos+8:])
@@ -410,6 +387,11 @@ func readWebP(b []byte, info *Info) error {
 			// without a precise count.
 			info.FrameCount = 0
 		}
+		// Only the extended format can carry metadata chunks, and the EXIF one
+		// holds a bare TIFF block as PNG's does.
+		if exif := findRIFFChunk(b, "EXIF"); exif != nil {
+			readEXIF(exif, info)
+		}
 		return nil
 	case "VP8 ":
 		if len(b) < 30 {
@@ -429,4 +411,26 @@ func readWebP(b []byte, info *Info) error {
 	}
 
 	return ErrHeaderTooShort
+}
+
+// findRIFFChunk returns the payload of the first chunk with this four-character
+// id, or nil. Chunks are padded to an even length, which the walk has to honour
+// or every chunk after an odd-sized one is misread.
+func findRIFFChunk(b []byte, id string) []byte {
+	pos := 12
+	for pos+8 <= len(b) {
+		l := int(binary.LittleEndian.Uint32(b[pos+4:]))
+		if l < 0 || pos+8+l > len(b) {
+			return nil
+		}
+		if string(b[pos:pos+4]) == id {
+			return b[pos+8 : pos+8+l]
+		}
+		next := pos + 8 + l + l%2
+		if next <= pos {
+			return nil
+		}
+		pos = next
+	}
+	return nil
 }

@@ -48,9 +48,17 @@ the source, the source is returned unchanged. `limit_0` allows upscaling.
 (`nw` *(default)* `north` `ne` `west` `center` `east` `sw` `south` `se`).
 A crop larger than the image is clamped to the image, as in OSS.
 
-**`rotate`** — `0` `90` `180` `270` `360`, clockwise. OSS accepts any angle
-0–360; libvips only rotates losslessly by multiples of 90, and anything else is
-refused rather than silently rounded.
+**`rotate`** — `0..360`, clockwise, as in OSS.
+
+A multiple of 90 is a lossless transpose and keeps the frame. Any other angle is
+a resample: the canvas grows to the bounding box of the rotated rectangle, and
+the corners it exposes are transparent — or the background colour when the
+output format has no alpha, which is what OSS does. A 300×200 source at 45°
+comes out 354×354, and `rotate,45/format,jpg` has white corners.
+
+The two take different libvips calls, and the free rotation runs *after* the
+resize contract has been satisfied: `resize,m_fill,w_100,h_100/rotate,45` gives
+a 141×141 result, not a 100×100 one with its corners sheared off.
 
 **`auto-orient`** — `0` or `1`: whether to apply the EXIF orientation tag.
 Default 1, same as OSS.
@@ -128,15 +136,45 @@ stadium.
 > operations — rather than a rasterised shape, so it needs nothing from librsvg
 > and gets a one-pixel antialiased arc for free.
 
-**`watermark`** — `image_<base64url of an object key>`, `t_0..100` opacity,
-`g_` anchor (default `se`), `x_`/`y_` offsets. The watermark is read from the
-same root as the image, through the same resolver, so traversal and symlink
-escapes are refused there too. All four base64 spellings (raw/padded ×
-url/standard alphabet) are accepted.
+**`watermark`** — an image, a line of text, or both side by side. Every
+parameter OSS documents is accepted.
 
-> `text_` watermarks are **not** supported. Rendering text needs a text engine;
-> libvips has one via Pango but imgproxy's binding does not expose it, so the
-> parser refuses `text_` rather than silently dropping it.
+| | |
+|---|---|
+| `image_` | base64url of an object key |
+| `text_` | base64url of the text |
+| `t_0..100` | opacity, default 100 |
+| `g_` | anchor, default `se` |
+| `x_`/`y_0..4096` | offset from the anchored edges, default 10 |
+| `voffset_-1000..1000` | offset from the centre line, for the middle row of anchors |
+| `P_1..100` | scale an image watermark to a percentage of the base image |
+| `fill_0|1` | tile the watermark across the whole image |
+| `padx_`/`pady_0..4096` | gaps between tiles |
+| `type_` | base64url of a font name, default `wqy-zenhei` |
+| `color_RRGGBB` | text colour, default black |
+| `size_1..1000` | text size in pixels, default 40 |
+| `shadow_0..100` | drop-shadow opacity, default 0 |
+| `rotate_0..360` | rotate the text |
+| `order_0|1` | which of image and text comes first, default image |
+| `align_0|1|2` | top / middle / bottom, default bottom |
+| `interval_0..1000` | gap between image and text |
+
+The object key is read from the same root as the image, through the same
+resolver, so traversal and symlink escapes are refused there too. All four
+base64 spellings (raw/padded × url/standard alphabet) are accepted.
+
+Combinations that cannot all be honoured are refused rather than half-applied:
+`y_` with `voffset_` (both are the vertical offset), `g_`/`x_`/`y_` with
+`fill_1` (which has no anchor), `padx_`/`pady_` without it, `P_` without an
+image, the text parameters without text, and `order_`/`align_`/`interval_`
+without both.
+
+> Two things about text cannot match OSS byte for byte. **Which font a name
+> resolves to** is the host's fontconfig, not ours: OSS's identifiers are mapped
+> onto family lists with a generic fallback, and an unlisted name is passed
+> through so a deployment can ask for a font it has actually installed. And the
+> **drop shadow's geometry** is a calibration — OSS's `shadow_` gives only its
+> transparency, so the offset and blur are scaled from the font size here.
 
 **`format`** — `jpg` `jpeg` `png` `webp` `gif` `avif` `heic` `jxl` `tiff` `bmp`,
 plus **`auto`**.
@@ -178,6 +216,18 @@ read, and it is the slowest of the three to produce. Ask for it explicitly.
   "YResolution": {"value": "1/1"}
 }
 ```
+
+When the source carries EXIF, its tags are merged into the same object, as OSS
+does — `Make`, `Model`, `DateTime`, `Orientation`, `LensModel`, the GPS block and
+so on. Tags are read from JPEG's `APP1`, PNG's `eXIf` chunk and WebP's `EXIF`
+chunk; an image without EXIF returns exactly the eight fields above.
+
+> Two deliberate differences, both about *formatting* rather than which tags
+> appear. Values are rendered from the raw EXIF types — `GPSLatitude` is
+> `"39/1 54/1 2668/100"`, where OSS runs the same tags through exiv2's
+> pretty-printer and says `"39deg 54' 26.68\""`. And tags with no standard name,
+> along with `UNDEFINED`-typed ones such as `MakerNote`, are skipped rather than
+> emitted as hex blobs.
 
 Errors use the OSS envelope, so a client written against OSS parses them
 unchanged:
@@ -299,20 +349,31 @@ internal/timeout/        the one function iStore needed from imgproxy's server p
 9. **Tests not carried over.** They depend on `testify` and a large `testdata`
    tree.
 
-10. **Two operations added to the cgo layer.** `vips_linear_go` (a linear
-    transform of the colour bands, leaving alpha alone) and
-    `vips_round_corners_go` (a rounded-rectangle alpha mask) in
-    `internal/vips/vips.c`, with `Image.Linear` and `Image.RoundCorners` in
-    `vips.go`. imgproxy has neither; they are what `bright`/`contrast` and
-    `circle`/`rounded-corners` are built on. Two matching pipeline steps,
-    `processing.adjust` and `processing.roundCorners`, sit between
-    `applyFilters` and `fixSize`.
+10. **Five operations added to the cgo layer**, in `internal/vips/vips.c` with
+    their bindings in `vips.go`. imgproxy has none of them.
+
+    | | |
+    |---|---|
+    | `vips_linear_go` | linear transform of the colour bands, alpha untouched — `bright`, `contrast` |
+    | `vips_round_corners_go` | rounded-rectangle alpha mask — `circle`, `rounded-corners` |
+    | `vips_rotate_go` | arbitrary-angle rotation with a transparent background — `rotate` |
+    | `vips_text_go` | Pango text as a coloured RGBA image, with an optional drop shadow — `watermark,text_` |
+    | `vips_ensure_alpha_go` | add an opaque alpha band, so embedding leaves a transparent margin |
+
+    Three matching pipeline steps — `processing.adjust`, `processing.rotateFree`
+    and `processing.roundCorners` — sit between `cropToResult` and `fixSize`.
+
+11. **EXIF reading added to `internal/imageinfo`.** imgproxy has no info
+    endpoint; the TIFF/IFD walk that answers `image/info` is iStore's.
 
 ## Build requirements
 
 - Go 1.24+
 - libvips 8.13+ with, at minimum: libjpeg, libpng, libwebp (8.16+ only if you
   need to *read* animated JPEG XL — see "Not built yet")
+- for `watermark,text_`: libvips built with Pango, plus fonts installed on the
+  host — including a CJK face if the text will be Chinese, or Pango renders
+  boxes
 - for AVIF output: libheif built with an AV1 **encoder** (aom, SVT-AV1 or rav1e)
 - for JPEG XL output: libjxl
 
@@ -492,6 +553,50 @@ really uses the colour it was given. On a copy whose border carries ±6 noise,
 
 Chained: `trim/resize,w_60/format,avif` gives a 60×40 AVIF.
 
+`rotate` on a 300×200 source. Every angle lands on the bounding box the
+trigonometry predicts, and only the multiples of 90 keep the frame:
+
+```
+rotate,0    300x200 RGB     rotate,90   200x300 RGB
+rotate,30   360x323 RGBA    rotate,45   354x354 RGBA
+rotate,70   291x350 RGBA    rotate,359  303x205 RGBA
+```
+
+Corners come out `a=0` on PNG and white on JPEG, `rotate,45/format,auto` with an
+AVIF `Accept` returns AVIF **RGBA** where the same request without the rotation
+returns RGB, and `resize,m_fill,w_100,h_100/rotate,45` gives 141×141 — the crop
+happens first, so the rotation is not sheared off.
+
+`watermark`, measured on a 600×400 canvas by which quadrant the ink lands in and
+by the centroid of each layer:
+
+```
+default (se, 10px)      ink only in SE       g_nw               ink only in NW
+g_center,voffset_-150   ink moves to the top row
+P_50                    1172 -> 30297 ink px  (the logo scaled to half the base)
+fill_1                  29300 px in each of the four quadrants — even tiling
+fill_1,padx_100,pady_100 2724 px per quadrant — the gaps take effect
+t_20                    same coverage, visibly faint
+```
+
+Text: `text_` renders through Pango — Latin and CJK both — and `size_`,
+`color_`, `shadow_` and `rotate_` each change the pixels as asked. Image + text:
+`order_0` puts the logo at x≈40 and the text at x≈147; `order_1` swaps them to
+x≈182 and x≈67. With a 12px text beside a 40px logo, `align_0/1/2` place the text
+at rows 10–22, 23–35 and 37–49 against the logo's 15–44 — top, middle, bottom.
+
+Twelve malformed watermark URLs return 400 with the real reason, including a
+base64 object key of `../../etc/passwd`, which is refused as "watermark image not
+found" rather than confirming what does exist.
+
+`info` on a JPEG carrying a full EXIF block returns 34 fields — the 8 basic ones
+plus `Make`, `Model`, `Software`, `DateTime`, `Orientation`, `ExposureTime`,
+`FNumber`, `ISOSpeedRatings`, `LensModel`, the GPS block and the rest. The same
+EXIF written into a PNG (`eXIf`) and a WebP (`EXIF` chunk) returns the same 34
+fields, so all three container paths agree. `UserComment`, an `UNDEFINED` tag, is
+skipped. An image with no EXIF returns exactly 8 fields, byte-identical to what
+it returned before EXIF merging existed.
+
 `circle` and `rounded-corners` on a 300×200 solid blue source, reading the alpha
 channel of the PNG result:
 
@@ -557,8 +662,8 @@ deliberate — see the note on `Validate` vs `CheckEncoders` below.
 
 ## Not built yet
 
-Measured against OSS's own action list. Two actions are missing outright, three
-are partial, and one source format does not load on this build.
+Measured against OSS's own action list. Two actions are missing outright;
+everything else OSS documents is implemented.
 
 **Missing actions**
 
@@ -571,24 +676,6 @@ are partial, and one source format does not load on this build.
 - `average-hue` (平均色调). Nothing exists for it. Needs a per-band mean from
   libvips (`vips_avg` on each band, or `vips_stats`) plus a second query-response
   path beside `info` — OSS answers this one as plain text `0xRRGGBB`, not JSON.
-
-**Partial actions**
-
-- `rotate` accepts only multiples of 90; OSS accepts any angle in 0..360 and
-  grows the canvas to fit. Arbitrary angles need `vips_rotate` with a background
-  colour and a new options key, not the current `VipsAngle`-based `Rotate`.
-- `watermark` implements `image_`, `t_`, `g_`, `x_`, `y_`. OSS also has
-  `voffset_` (centre-line offset), `P_` (scale the watermark to a percentage of
-  the base image), `fill_`/`padx_`/`pady_` (tiling), the text watermark
-  (`text_`, `type_`, `color_`, `size_`, `shadow_`, `rotate_`) and the mixed
-  image+text parameters (`order_`, `align_`, `interval_`). `P_` and `voffset_`
-  are parameter translation; tiling needs `vips_replicate` in the watermark
-  step; text needs a renderer libvips has via Pango but imgproxy's binding does
-  not expose.
-- `info` returns the eight basic fields. OSS merges the source's EXIF tags into
-  the same `{"value": ...}` map when the image has them — `Orientation`,
-  `DateTime`, `GPSLatitude`, `Software` and so on. `internal/imagemeta` is
-  already vendored, so this is reading tags rather than new machinery.
 
 **Not an action**
 

@@ -26,6 +26,7 @@ func (p *Processor) mainPipeline() Pipeline {
 		p.scale,
 		p.rotateAndFlip,
 		p.cropToResult,
+		p.rotateFree,
 		p.applyFilters,
 		p.adjust,
 		p.extend,
@@ -300,7 +301,8 @@ func (p *Processor) determineOutputFormat(
 	// would be answered with JPEG and the corners flattened to the background.
 	expectTransparency := !po.ShouldFlatten() &&
 		(img.HasAlpha() || po.PaddingEnabled() || po.ExtendEnabled() ||
-			po.CircleEnabled() || po.RoundedCornersEnabled())
+			po.CircleEnabled() || po.RoundedCornersEnabled() ||
+			po.RotateFreeEnabled())
 
 	format := po.Format()
 

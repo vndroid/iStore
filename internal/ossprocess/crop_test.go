@@ -125,7 +125,6 @@ func TestRotate(t *testing.T) {
 
 	for _, raw := range []string{
 		"image/rotate",
-		"image/rotate,45", // libvips only rotates losslessly by multiples of 90
 		"image/rotate,-90",
 		"image/rotate,400",
 		"image/rotate,abc",
@@ -138,6 +137,43 @@ func TestRotate(t *testing.T) {
 		if err := c.Validate(); err == nil {
 			t.Errorf("Validate(%q): expected an error", raw)
 		}
+	}
+}
+
+func TestRotateFree(t *testing.T) {
+	// An angle that is not a multiple of 90 takes the resampling path, which is
+	// a different libvips call and therefore a different key. Getting this wrong
+	// would send 45 into Rotate, where (45/90)%4 silently becomes 0 — a rotate
+	// that does nothing.
+	for _, tc := range []struct {
+		raw  string
+		want float64
+	}{
+		{"image/rotate,45", 45},
+		{"image/rotate,1", 1},
+		{"image/rotate,359", 359},
+	} {
+		o := applyChain(t, tc.raw)
+		if got := o.GetFloat(keys.RotateFree, -1); got != tc.want {
+			t.Errorf("%s -> %v, want %v", tc.raw, got, tc.want)
+		}
+		if o.Has(keys.Rotate) {
+			t.Errorf("%s must not set the lossless-rotate key", tc.raw)
+		}
+	}
+
+	// ...and the reverse: a multiple of 90 must stay on the lossless path, which
+	// keeps the frame instead of growing it.
+	for _, raw := range []string{"image/rotate,90", "image/rotate,180", "image/rotate,270"} {
+		if applyChain(t, raw).Has(keys.RotateFree) {
+			t.Errorf("%s must not set the resampling key", raw)
+		}
+	}
+
+	// 360 normalises to 0, which is neither.
+	o := applyChain(t, "image/rotate,360")
+	if o.GetFloat(keys.RotateFree, 0) != 0 {
+		t.Error("rotate,360 should not request a free rotation")
 	}
 }
 

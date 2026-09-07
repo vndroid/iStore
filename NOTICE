@@ -46,13 +46,19 @@ Modifications made by iStore are described in README.md under
   * auximageprovider loads auxiliary images from disk only, not over HTTP.
   * Environment variable prefix changed from IMGPROXY_ to ISTORE_.
   * Tests and test helpers were not carried over.
-  * internal/vips gained two operations that imgproxy does not have:
-    vips_linear_go (a linear transform of the colour bands) and
-    vips_round_corners_go (a rounded-rectangle alpha mask), together with the
-    Image.Linear and Image.RoundCorners methods that call them.
-  * internal/processing gained two pipeline steps that imgproxy does not have,
-    adjust.go (brightness and contrast) and round_corners.go (circle and
-    rounded corners), and the corresponding options keys and accessors.
+  * internal/vips gained five operations that imgproxy does not have:
+    vips_linear_go (a linear transform of the colour bands),
+    vips_round_corners_go (a rounded-rectangle alpha mask), vips_rotate_go
+    (arbitrary-angle rotation on a transparent background), vips_text_go
+    (Pango text as a coloured RGBA image) and vips_ensure_alpha_go, together
+    with the Image.Linear, Image.RoundCorners, Image.RotateAny,
+    Image.EnsureAlpha methods and the vips.NewText constructor.
+  * internal/processing gained three pipeline steps that imgproxy does not
+    have: adjust.go (brightness and contrast), round_corners.go (circle and
+    rounded corners) and rotate_free.go (arbitrary-angle rotation), with the
+    corresponding options keys and accessors.
+  * internal/imageinfo and its EXIF reader are entirely iStore's: imgproxy has
+    no info endpoint.
 
 ================================================================================
 Third-party libraries linked at build time

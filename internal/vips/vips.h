@@ -81,6 +81,10 @@ int vips_apply_filters(VipsImage *in, VipsImage **out, double blur_sigma, double
 
 int vips_linear_go(VipsImage *in, VipsImage **out, double a, double b);
 int vips_round_corners_go(VipsImage *in, VipsImage **out, double radius);
+int vips_rotate_go(VipsImage *in, VipsImage **out, double angle);
+int vips_ensure_alpha_go(VipsImage *in, VipsImage **out);
+int vips_text_go(VipsImage **out, const char *text, const char *font, int dpi, RGB color,
+    double shadow_opacity, int shadow_offset, double shadow_sigma);
 
 int vips_flatten_go(VipsImage *in, VipsImage **out, RGB bg);
 

@@ -54,6 +54,12 @@ const (
 
 	Rotate = "rotate"
 
+	// RotateFree is an arbitrary angle in degrees. Rotate stays what it was in
+	// imgproxy — a multiple of 90, applied as a lossless transpose — because
+	// the two need different libvips calls and only the free one changes the
+	// canvas size.
+	RotateFree = "rotate_free"
+
 	FlipHorizontal = "flip.horizontal"
 	FlipVertical   = "flip.vertical"
 

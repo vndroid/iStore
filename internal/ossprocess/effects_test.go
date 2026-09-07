@@ -135,9 +135,138 @@ func TestWatermarkDefaults(t *testing.T) {
 	if got := o.GetFloat(keys.WatermarkOpacity, -1); got != 1 {
 		t.Errorf("default opacity = %v, want 1", got)
 	}
-	// OSS anchors a watermark bottom-right by default.
+	// OSS anchors a watermark bottom-right by default, 10px off each edge.
 	if got := options.Get(o, keys.WatermarkPosition, processing.GravityUnknown); got != processing.GravitySouthEast {
 		t.Errorf("default position = %v, want south-east", got)
+	}
+	if got := o.GetFloat(keys.WatermarkXOffset, -1); got != 10 {
+		t.Errorf("default x = %v, want 10", got)
+	}
+	if got := o.GetFloat(keys.WatermarkYOffset, -1); got != 10 {
+		t.Errorf("default y = %v, want 10", got)
+	}
+	// Nothing about text should be set for an image-only watermark.
+	if o.Has(KeyWatermarkText) {
+		t.Error("an image watermark must not carry text options")
+	}
+}
+
+func TestWatermarkScale(t *testing.T) {
+	// P_ is a percentage of the base image, which the pipeline spells as a
+	// 0..1 scale.
+	o := applyChain(t, "image/watermark,image_"+b64url("logo.png")+",P_20")
+	if got := o.GetFloat(keys.WatermarkScale, -1); got != 0.2 {
+		t.Errorf("P_20 -> %v, want 0.2", got)
+	}
+	// Absent, the watermark keeps its own size and the key stays unset, because
+	// the pipeline reads any positive value as a request to rescale.
+	if applyChain(t, "image/watermark,image_"+b64url("logo.png")).Has(keys.WatermarkScale) {
+		t.Error("no P_ should leave the scale unset")
+	}
+}
+
+func TestWatermarkVOffset(t *testing.T) {
+	// voffset is the offset from the centre line, so it is signed and lands in
+	// the same key as y_ — which is why giving both is refused.
+	o := applyChain(t, "image/watermark,image_"+b64url("l.png")+",g_center,voffset_-30")
+	if got := o.GetFloat(keys.WatermarkYOffset, 0); got != -30 {
+		t.Errorf("voffset_-30 -> %v, want -30", got)
+	}
+}
+
+func TestWatermarkFill(t *testing.T) {
+	o := applyChain(t, "image/watermark,image_"+b64url("l.png")+",fill_1,padx_20,pady_30")
+
+	// Tiling is a gravity in the pipeline, and the offsets become the gaps
+	// between copies rather than a position.
+	if got := options.Get(o, keys.WatermarkPosition, processing.GravityUnknown); got != processing.GravityReplicate {
+		t.Errorf("fill_1 position = %v, want replicate", got)
+	}
+	if got := o.GetFloat(keys.WatermarkXOffset, -1); got != 20 {
+		t.Errorf("padx -> %v, want 20", got)
+	}
+	if got := o.GetFloat(keys.WatermarkYOffset, -1); got != 30 {
+		t.Errorf("pady -> %v, want 30", got)
+	}
+
+	// fill_0 is the default and must not turn into tiling.
+	o = applyChain(t, "image/watermark,image_"+b64url("l.png")+",fill_0")
+	if got := options.Get(o, keys.WatermarkPosition, processing.GravityUnknown); got == processing.GravityReplicate {
+		t.Error("fill_0 should leave the anchor alone")
+	}
+}
+
+func TestWatermarkText(t *testing.T) {
+	raw := "image/watermark,text_" + b64url("© iStore") +
+		",type_" + b64url("wqy-zenhei") + ",color_FF0000,size_24,shadow_50,rotate_30,t_80"
+	o := applyChain(t, raw)
+
+	if got := o.GetString(KeyWatermarkText, ""); got != "© iStore" {
+		t.Errorf("text = %q", got)
+	}
+	// The OSS font identifier is mapped to a family list fontconfig can resolve,
+	// with a generic fallback: the exact face is the host's business.
+	if got := o.GetString(KeyWatermarkFont, ""); got != "WenQuanYi Zen Hei,sans" {
+		t.Errorf("font = %q", got)
+	}
+	c := options.Get(o, KeyWatermarkColor, color.Black)
+	if c.R != 0xFF || c.G != 0 || c.B != 0 {
+		t.Errorf("colour = %v, want red", c)
+	}
+	if got := o.GetInt(KeyWatermarkSize, 0); got != 24 {
+		t.Errorf("size = %d, want 24", got)
+	}
+	if got := o.GetFloat(KeyWatermarkShadow, -1); got != 0.5 {
+		t.Errorf("shadow = %v, want 0.5", got)
+	}
+	if got := o.GetInt(KeyWatermarkRotate, -1); got != 30 {
+		t.Errorf("rotate = %d, want 30", got)
+	}
+	if got := o.GetFloat(keys.WatermarkOpacity, -1); got != 0.8 {
+		t.Errorf("opacity = %v, want 0.8", got)
+	}
+	// No object key, so nothing should ask the provider to read one.
+	if o.Has(KeyWatermarkPath) {
+		t.Error("a text watermark must not set an object key")
+	}
+}
+
+func TestWatermarkTextDefaults(t *testing.T) {
+	o := applyChain(t, "image/watermark,text_"+b64url("hi"))
+
+	if got := o.GetInt(KeyWatermarkSize, 0); got != 40 {
+		t.Errorf("default size = %d, want 40", got)
+	}
+	if got := o.GetFloat(KeyWatermarkShadow, -1); got != 0 {
+		t.Errorf("default shadow = %v, want 0", got)
+	}
+	c := options.Get(o, KeyWatermarkColor, color.White)
+	if c != color.Black {
+		t.Errorf("default colour = %v, want black", c)
+	}
+}
+
+func TestWatermarkImageAndText(t *testing.T) {
+	// order/align/interval only mean something when both layers exist, so they
+	// are only written then.
+	raw := "image/watermark,image_" + b64url("l.png") + ",text_" + b64url("hi") +
+		",order_1,align_1,interval_12"
+	o := applyChain(t, raw)
+
+	if got := o.GetInt(KeyWatermarkOrder, -1); got != 1 {
+		t.Errorf("order = %d, want 1", got)
+	}
+	if got := o.GetInt(KeyWatermarkAlign, -1); got != 1 {
+		t.Errorf("align = %d, want 1", got)
+	}
+	if got := o.GetInt(KeyWatermarkInterval, -1); got != 12 {
+		t.Errorf("interval = %d, want 12", got)
+	}
+
+	// OSS's default alignment is bottom.
+	o = applyChain(t, "image/watermark,image_"+b64url("l.png")+",text_"+b64url("hi"))
+	if got := o.GetInt(KeyWatermarkAlign, -1); got != 2 {
+		t.Errorf("default align = %d, want 2 (bottom)", got)
 	}
 }
 
@@ -160,14 +289,33 @@ func TestWatermarkBase64Variants(t *testing.T) {
 
 func TestWatermarkRejects(t *testing.T) {
 	for _, raw := range []string{
-		"image/watermark",                         // no image
-		"image/watermark,t_50",                    // still no image
-		"image/watermark,text_" + b64url("hello"), // text is not supported
-		"image/watermark,image_!!!",               // not base64
-		"image/watermark,image_" + b64url(""),     // empty key
+		"image/watermark",                     // neither image nor text
+		"image/watermark,t_50",                // still neither
+		"image/watermark,image_!!!",           // not base64
+		"image/watermark,image_" + b64url(""), // empty key
 		"image/watermark,image_" + b64url("a") + ",t_101",
 		"image/watermark,image_" + b64url("a") + ",g_up",
 		"image/watermark,image_" + b64url("a") + ",z_1",
+		// Each of these asks for two things at once, or for a parameter that
+		// belongs to the other kind of watermark. Honouring one and dropping the
+		// other silently is the failure this package exists to avoid.
+		"image/watermark,image_" + b64url("a") + ",y_10,voffset_10",
+		"image/watermark,image_" + b64url("a") + ",fill_1,g_nw",
+		"image/watermark,image_" + b64url("a") + ",fill_1,x_10",
+		"image/watermark,image_" + b64url("a") + ",padx_10",
+		"image/watermark,image_" + b64url("a") + ",size_20",
+		"image/watermark,image_" + b64url("a") + ",color_FF0000",
+		"image/watermark,text_" + b64url("hi") + ",P_50",
+		"image/watermark,text_" + b64url("hi") + ",order_1",
+		"image/watermark,image_" + b64url("a") + ",order_1",
+		"image/watermark,image_" + b64url("a") + ",P_0",
+		"image/watermark,image_" + b64url("a") + ",P_101",
+		"image/watermark,text_" + b64url("hi") + ",size_0",
+		"image/watermark,text_" + b64url("hi") + ",size_1001",
+		"image/watermark,text_" + b64url("hi") + ",shadow_101",
+		"image/watermark,text_" + b64url("hi") + ",rotate_361",
+		"image/watermark,text_" + b64url("hi") + ",color_XYZ",
+		"image/watermark,image_" + b64url("a") + ",fill_2",
 	} {
 		if c, err := Parse(raw); err == nil {
 			if err := c.Validate(); err == nil {
