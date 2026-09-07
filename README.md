@@ -5,8 +5,8 @@ built on libvips. The image engine is ported from
 [imgproxy](https://github.com/imgproxy/imgproxy) (Apache-2.0); see `NOTICE`.
 
 Status: **working.** `resize`, `crop`, `indexcrop`, `rotate`, `auto-orient`,
-`blur`, `sharpen`, `watermark`, `quality`, `format` and `info` are served over
-HTTP from a local directory, with a bounded disk cache, request coalescing,
+`blur`, `sharpen`, `pixelate`, `trim`, `watermark`, `quality`, `format` and
+`info` are served over HTTP from a local directory, with a bounded disk cache, request coalescing,
 a concurrency limit and `Accept`-based format negotiation.
 
 ## Usage
@@ -68,6 +68,29 @@ short slice is kept rather than discarded, as in OSS.
 takes a gaussian sigma, so this maps `v/100`, putting OSS's recommended 100 at
 sigma 1. A calibration, not a specification — output will not be bit-identical
 to OSS.
+
+**`pixelate`** — `1..1000`, the block edge in source pixels: `pixelate,8`
+averages every 8×8 block. `1` is a no-op rather than an error, so a caller
+computing the block size from a zoom level need not special-case the smallest.
+
+> `pixelate` is an **iStore addition**, not an OSS action — OSS's effect list has
+> blur, sharpen, bright and contrast but no pixelate. It is here because it is
+> the one effect that reliably makes a face or a plate unreadable without
+> leaving a recoverable original; a blur strong enough to do that usually ruins
+> the rest of the frame.
+
+**`trim`** — `t_0..254` threshold (default 10), `c_RRGGBB` border colour,
+`eh_0|1` / `ev_0|1` equal-sides. Removes a uniform border.
+
+Omitting `c_` detects the colour from the image's own border, which is what you
+want almost always; giving it trims that colour specifically and leaves anything
+else alone. `eh_1`/`ev_1` remove the *same* amount from opposite sides, keeping
+the subject centred rather than flush.
+
+> `trim` is an **iStore addition**, not an OSS action. It earns its place because
+> it fixes a class of source file rather than restyling it: screenshots and
+> exported logos routinely carry a band of background that no amount of resizing
+> removes, and trimming at serve time avoids re-cutting the originals.
 
 **`watermark`** — `image_<base64url of an object key>`, `t_0..100` opacity,
 `g_` anchor (default `se`), `x_`/`y_` offsets. The watermark is read from the
@@ -390,6 +413,43 @@ Accept: (absent)                    -> image/png
 
 Three distinct capabilities produced three cache entries; the last two share one.
 
+`pixelate` on a 160×160 image of per-pixel random noise, counting distinct
+colours in the output — the block count should be exactly (160/n)²:
+
+```
+n        distinct colours   expected   distinct in a 16x16 corner
+(none)             25,584     25,600                          256
+2                   6,397      6,400                           64
+4                   1,595      1,600                           16
+8                     399        400                            4
+16                     98        100                            1
+40                     16         16                            1
+```
+
+`trim` on a 300×200 image with a 120×80 red block at (40,30) — margins of
+40 left, 140 right, 30 top, 90 bottom:
+
+```
+(none)                  300x200
+trim                    120x80    border detected and removed entirely
+trim,t_0                120x80    a flat border needs no tolerance
+trim,c_FFFFFF           120x80    the same border, named explicitly
+trim,eh_1               220x80    40 off each side, the smaller margin
+trim,ev_1               120x140   30 off top and bottom
+trim,eh_1,ev_1          220x140
+```
+
+On a *black*-bordered copy of the same image, `trim` still gives 120×80 while
+`trim,c_FFFFFF` correctly does nothing (300×200) — the explicit-colour path
+really uses the colour it was given. On a copy whose border carries ±6 noise,
+`trim,t_0` cannot cut (300×200) and `trim,t_20` can (120×80).
+
+Chained: `trim/resize,w_60/format,avif` gives a 60×40 AVIF.
+
+`pixelate,1` returns bytes identical to no pixelate at all (same SHA-256 of the
+decoded pixels). Chained: `crop,w_120,h_80,g_nw/pixelate,20` gives 120×80 with
+exactly 24 colours, i.e. 6×4 blocks.
+
 Cache eviction, ten entries totalling 438,603 bytes with the largest at 88,298:
 a 200,000-byte bound left two entries and 164,834 bytes. A 60,000-byte bound
 emptied the cache, which is correct — the largest single entry exceeds that
@@ -413,8 +473,8 @@ deliberate — see the note on `Validate` vs `CheckEncoders` below.
 
 ## Not built yet
 
-- `pixelate` and `trim`: the pipeline has both, they need only a parameter
-  translation in `ossprocess.Chain.Apply`, the same shape as `resize.go`.
+- `padding`, `extend`, focus-point gravity: the pipeline has all three, each
+  needs only a parameter translation in `ossprocess.Chain.Apply`.
 - `circle`, `rounded-corners`, `bright`, `contrast`: no equivalent in the
   pipeline. These need new libvips calls exposed through `internal/vips`.
 - `watermark,text_`: needs a text renderer, see above.

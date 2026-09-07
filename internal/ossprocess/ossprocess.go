@@ -11,15 +11,16 @@
 // mostly `key_value` pairs, but a few actions (format) take a bare value.
 //
 // iStore implements `resize`, `crop`, `indexcrop`, `rotate`, `auto-orient`,
-// `blur`, `sharpen`, `watermark`, `quality`, `format` and `info`. Everything else
+// `blur`, `sharpen`, `pixelate`, `trim`, `watermark`, `quality`, `format` and
+// `info`. Everything else
 // parses into a
 // generic Action and is rejected by Chain.Validate with a clear message, rather
 // than being silently ignored — an unrecognised transform that returns the
 // original image is worse than an error, because the caller cannot tell.
 //
-// The engine underneath (ported from imgproxy) also supports pixelation,
-// trimming and padding. Adding them here is a matter of translating parameters
-// into options keys; see Chain.Apply.
+// The engine underneath (ported from imgproxy) also supports padding, extend
+// and focus-point gravity. Adding them here is a matter of translating
+// parameters into options keys; see Chain.Apply.
 package ossprocess
 
 import (
@@ -174,6 +175,14 @@ func (c *Chain) Validate() error {
 			}
 		case "sharpen":
 			if _, err := parseSharpen(a); err != nil {
+				return err
+			}
+		case "pixelate":
+			if _, err := parsePixelate(a); err != nil {
+				return err
+			}
+		case "trim":
+			if _, err := parseTrim(a); err != nil {
 				return err
 			}
 		case "indexcrop":
@@ -364,6 +373,20 @@ func (c *Chain) Apply(o *options.Options, srcW, srcH int) error {
 				return err
 			}
 			o.Set(keys.Sharpen, sigma)
+
+		case "pixelate":
+			px, err := parsePixelate(a)
+			if err != nil {
+				return err
+			}
+			o.Set(keys.Pixelate, px)
+
+		case "trim":
+			tr, err := parseTrim(a)
+			if err != nil {
+				return err
+			}
+			tr.apply(o)
 
 		case "indexcrop":
 			ic, err := parseIndexCrop(a)

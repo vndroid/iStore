@@ -7,6 +7,7 @@ import (
 	"github.com/kane/istore/internal/options"
 	"github.com/kane/istore/internal/options/keys"
 	"github.com/kane/istore/internal/processing"
+	"github.com/kane/istore/internal/vips/color"
 )
 
 func TestSharpen(t *testing.T) {
@@ -200,5 +201,109 @@ func TestFormatAuto(t *testing.T) {
 	c2, _ := Parse("image/format,avif")
 	if c2.IsAutoFormat() {
 		t.Error("format,avif is not auto")
+	}
+}
+
+func TestPixelate(t *testing.T) {
+	for raw, want := range map[string]int{
+		"image/pixelate,1":    1, // a no-op, deliberately not an error
+		"image/pixelate,8":    8,
+		"image/pixelate,1000": 1000,
+	} {
+		o := applyChain(t, raw)
+		if got := o.GetInt(keys.Pixelate, 0); got != want {
+			t.Errorf("%s -> %d, want %d", raw, got, want)
+		}
+	}
+
+	for _, raw := range []string{
+		"image/pixelate",
+		"image/pixelate,0",
+		"image/pixelate,-1",
+		"image/pixelate,1001",
+		"image/pixelate,abc",
+		"image/pixelate,p_8",
+		"image/pixelate,8,16",
+	} {
+		if c, err := Parse(raw); err == nil {
+			if err := c.Validate(); err == nil {
+				t.Errorf("Validate(%q): expected an error", raw)
+			}
+		}
+	}
+}
+
+func TestTrimDefaults(t *testing.T) {
+	o := applyChain(t, "image/trim")
+
+	// The threshold key is what enables trimming at all, so a bare `trim` must
+	// still write it.
+	if !o.Has(keys.TrimThreshold) {
+		t.Fatal("bare trim must set the threshold, otherwise the pipeline skips it")
+	}
+	if got := o.GetFloat(keys.TrimThreshold, -1); got != TrimDefaultThreshold {
+		t.Errorf("threshold = %v, want %v", got, TrimDefaultThreshold)
+	}
+	// No colour means "detect from the image's own border".
+	if o.Has(keys.TrimColor) {
+		t.Error("bare trim must not set a colour, or the pipeline stops auto-detecting")
+	}
+	if o.GetBool(keys.TrimEqualHor, true) || o.GetBool(keys.TrimEqualVer, true) {
+		t.Error("equal-sides flags should default to off")
+	}
+}
+
+func TestTrimParams(t *testing.T) {
+	o := applyChain(t, "image/trim,t_20,c_FFFFFF,eh_1,ev_1")
+
+	if got := o.GetFloat(keys.TrimThreshold, -1); got != 20 {
+		t.Errorf("threshold = %v, want 20", got)
+	}
+	if !o.Has(keys.TrimColor) {
+		t.Fatal("c_ should set an explicit trim colour")
+	}
+	c := options.Get(o, keys.TrimColor, color.Black)
+	if c.R != 0xFF || c.G != 0xFF || c.B != 0xFF {
+		t.Errorf("colour = %v, want white", c)
+	}
+	if !o.GetBool(keys.TrimEqualHor, false) || !o.GetBool(keys.TrimEqualVer, false) {
+		t.Error("eh_1/ev_1 should enable the equal-sides flags")
+	}
+}
+
+func TestTrimThresholdBounds(t *testing.T) {
+	// 0 is meaningful: trim only pixels exactly equal to the border colour.
+	if got := applyChain(t, "image/trim,t_0").GetFloat(keys.TrimThreshold, -1); got != 0 {
+		t.Errorf("t_0 -> %v, want 0", got)
+	}
+	if got := applyChain(t, "image/trim,t_254").GetFloat(keys.TrimThreshold, -1); got != 254 {
+		t.Errorf("t_254 -> %v, want 254", got)
+	}
+}
+
+func TestTrimRejects(t *testing.T) {
+	for _, raw := range []string{
+		"image/trim,t_-1",
+		"image/trim,t_255", // would trim everything
+		"image/trim,t_abc",
+		"image/trim,c_XYZ",
+		"image/trim,c_FFF", // must be six hex digits
+		"image/trim,eh_2",
+		"image/trim,z_1",
+		"image/trim,10",      // bare value
+		"image/trim,t_1,t_2", // repeated
+	} {
+		if c, err := Parse(raw); err == nil {
+			if err := c.Validate(); err == nil {
+				t.Errorf("Validate(%q): expected an error", raw)
+			}
+		}
+	}
+}
+
+func TestTrimNeedsNoSourceSize(t *testing.T) {
+	c, _ := Parse("image/trim,t_20")
+	if c.NeedsSourceSize() {
+		t.Error("trim works from the pixels, not the declared size, so it must not force a header read")
 	}
 }
