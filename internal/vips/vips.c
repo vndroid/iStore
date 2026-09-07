@@ -1697,3 +1697,83 @@ vips_text_go(VipsImage **out, const char *text, const char *font, int dpi,
 
   return ret;
 }
+
+// vips_average_hue_go returns the mean colour of the image, in sRGB.
+//
+// It uses vips_stats rather than three vips_avg calls, and the reason is not
+// speed: the JPEG and PNG loaders open their source with VIPS_ACCESS_SEQUENTIAL,
+// so the pixels can be walked exactly once. Averaging band by band means three
+// walks, which fails outright on those formats. vips_stats does the whole thing
+// in one pass and hands back a small table.
+//
+// The conversion to sRGB first matters: the answer is meant to describe the
+// colour a viewer sees, and a CMYK or 16-bit source averaged in its own space
+// would give a number in units nobody asked about.
+//
+// Transparency is weighted, not ignored. A logo on a transparent field is mostly
+// stored as transparent black, and a flat mean of those pixels answers "black"
+// for an image a person would call green. Premultiplying first and dividing by
+// the summed alpha gives the mean of what is actually visible. For an opaque
+// image the two are identical, so this only changes the answer where the flat
+// mean was wrong.
+int
+vips_average_hue_go(VipsImage *in, double *r, double *g, double *b)
+{
+  VipsImage *base = vips_image_new();
+  VipsImage **t = (VipsImage **) vips_object_local_array(VIPS_OBJECT(base), 4);
+
+  if (vips_colourspace(in, &t[0], VIPS_INTERPRETATION_sRGB, NULL)) {
+    VIPS_UNREF(base);
+    return 1;
+  }
+
+  VipsImage *img = t[0];
+  gboolean has_alpha = vips_image_hasalpha(img);
+
+  if (has_alpha && vips_premultiply(img, &t[1], NULL)) {
+    VIPS_UNREF(base);
+    return 1;
+  }
+  if (has_alpha)
+    img = t[1];
+
+  if (vips_stats(img, &t[2], NULL) || vips_image_wio_input(t[2])) {
+    VIPS_UNREF(base);
+    return 1;
+  }
+
+  // The stats table is 6 columns wide and one row taller than the band count:
+  // row 0 summarises every band together, rows 1..n are the individual bands.
+  // Column 2 is the sum and column 4 the mean.
+  int bands = t[2]->Ysize - 1;
+  double out[3] = { 0.0, 0.0, 0.0 };
+
+  if (has_alpha) {
+    double alpha_sum = *((double *) VIPS_IMAGE_ADDR(t[2], 2, bands));
+
+    // Nothing visible at all: there is no colour to report.
+    if (alpha_sum > 0.0) {
+      for (int i = 0; i < 3; i++) {
+        int row = (i < bands - 1 ? i : bands - 2) + 1;
+        double premul_sum = *((double *) VIPS_IMAGE_ADDR(t[2], 2, row));
+
+        // premultiply scales by alpha/255, so undoing it needs the same factor.
+        out[i] = premul_sum * 255.0 / alpha_sum;
+      }
+    }
+  }
+  else {
+    for (int i = 0; i < 3; i++) {
+      int row = (i < bands ? i : bands - 1) + 1;
+      out[i] = *((double *) VIPS_IMAGE_ADDR(t[2], 4, row));
+    }
+  }
+
+  *r = out[0];
+  *g = out[1];
+  *b = out[2];
+
+  VIPS_UNREF(base);
+
+  return 0;
+}

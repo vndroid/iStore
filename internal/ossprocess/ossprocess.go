@@ -12,8 +12,8 @@
 //
 // iStore implements `resize`, `crop`, `indexcrop`, `trim`, `rotate`,
 // `auto-orient`, `blur`, `sharpen`, `pixelate`, `bright`, `contrast`, `circle`,
-// `rounded-corners`, `watermark`, `quality`, `format` and `info`. Everything
-// else
+// `rounded-corners`, `watermark`, `quality`, `format`, `interlace`, `info` and
+// `average-hue`. Everything else
 // parses into a
 // generic Action and is rejected by Chain.Validate with a clear message, rather
 // than being silently ignored — an unrecognised transform that returns the
@@ -124,8 +124,17 @@ func Parse(raw string) (*Chain, error) {
 // OSS treats `info` as terminal: it describes the source object and cannot be
 // combined with transforms. iStore keeps that rule, so a chain is either an
 // info query or a transform chain, never both.
-func (c *Chain) IsInfo() bool {
-	return len(c.Actions) == 1 && c.Actions[0].Name == "info"
+func (c *Chain) IsInfo() bool { return c.isQuery("info") }
+
+// IsAverageHue reports whether the chain asks for the image's mean colour.
+//
+// Like info, it is a query about the source rather than a transform of it, and
+// terminal for the same reason. Unlike info it needs the pixels, so answering it
+// costs a decode.
+func (c *Chain) IsAverageHue() bool { return c.isQuery("average-hue") }
+
+func (c *Chain) isQuery(name string) bool {
+	return len(c.Actions) == 1 && c.Actions[0].Name == name
 }
 
 // Validate rejects chains that are wrong on their face: unknown actions, bad
@@ -139,12 +148,15 @@ func (c *Chain) IsInfo() bool {
 func (c *Chain) Validate() error {
 	for _, a := range c.Actions {
 		switch a.Name {
-		case "info":
+		case "info", "average-hue":
+			// Both describe the source rather than transforming it, so neither
+			// can be one link of a chain: there would be nothing for the rest of
+			// the chain to act on.
 			if len(c.Actions) != 1 {
-				return fmt.Errorf("\"info\" cannot be combined with other actions")
+				return fmt.Errorf("%q cannot be combined with other actions", a.Name)
 			}
 			if len(a.Params) != 0 {
-				return fmt.Errorf("\"info\" takes no parameters")
+				return fmt.Errorf("%q takes no parameters", a.Name)
 			}
 		case "format":
 			if _, err := a.format(); err != nil {
@@ -180,6 +192,10 @@ func (c *Chain) Validate() error {
 			}
 		case "pixelate":
 			if _, err := parsePixelate(a); err != nil {
+				return err
+			}
+		case "interlace":
+			if _, err := parseInterlace(a); err != nil {
 				return err
 			}
 		case "trim":
@@ -417,6 +433,13 @@ func (c *Chain) Apply(o *options.Options, srcW, srcH int) error {
 				return err
 			}
 			o.Set(keys.Pixelate, px)
+
+		case "interlace":
+			on, err := parseInterlace(a)
+			if err != nil {
+				return err
+			}
+			o.Set(keys.Interlace, on)
 
 		case "trim":
 			tr, err := parseTrim(a)

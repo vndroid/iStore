@@ -6,8 +6,8 @@ built on libvips. The image engine is ported from
 
 Status: **working.** `resize`, `crop`, `indexcrop`, `trim`, `rotate`,
 `auto-orient`, `blur`, `sharpen`, `pixelate`, `bright`, `contrast`, `circle`,
-`rounded-corners`, `watermark`, `quality`, `format` and
-`info` are served over HTTP from a local directory, with a bounded disk cache, request coalescing,
+`rounded-corners`, `watermark`, `quality`, `format`, `interlace`, `info` and
+`average-hue` are served over HTTP from a local directory, with a bounded disk cache, request coalescing,
 a concurrency limit and `Accept`-based format negotiation.
 
 ## Usage
@@ -200,6 +200,16 @@ read, and it is the slowest of the three to produce. Ask for it explicitly.
 > quality the two agree closely; for a heavily-compressed source, `q_n` here
 > produces a larger file than OSS would.
 
+**`interlace`** — `0` or `1`. `1` encodes the result so a browser can paint it
+progressively as it downloads.
+
+OSS documents this for JPEG only, where it means a progressive scan order.
+iStore applies it to PNG as well, where the equivalent is Adam7 interlacing:
+the caller is asking for the same behaviour and the encoder has it. On any other
+output format it does nothing. Absent, the process-wide
+`ISTORE_JPEG_PROGRESSIVE` / `ISTORE_PNG_INTERLACED` settings apply — the action
+overrides them per request rather than replacing them.
+
 **`info`** — terminal, cannot be chained with transforms (same rule as OSS).
 
 `image/info` returns the OSS shape, every value a string:
@@ -228,6 +238,24 @@ chunk; an image without EXIF returns exactly the eight fields above.
 > pretty-printer and says `"39deg 54' 26.68\""`. And tags with no standard name,
 > along with `UNDEFINED`-typed ones such as `MakerNote`, are skipped rather than
 > emitted as hex blobs.
+
+**`average-hue`** — terminal, like `info`, and the response is **plain text**,
+not JSON, because that is what OSS returns:
+
+```
+0x285ac8
+```
+
+Unlike `info` this needs the pixels, so it decodes the image — one decode, no
+resize and no encode, for a seven-byte body. Only the first frame of an
+animation is read.
+
+> **Transparency is weighted, not ignored.** A logo on a transparent field is
+> stored as mostly transparent *black*, and a flat mean of those pixels answers
+> "black" for an image a person would call green. iStore premultiplies and
+> divides by the summed alpha, so a green mark on transparency reports green. For
+> a fully opaque image the two are identical, so this only changes the answer
+> where the flat mean was wrong.
 
 Errors use the OSS envelope, so a client written against OSS parses them
 unchanged:
@@ -349,7 +377,7 @@ internal/timeout/        the one function iStore needed from imgproxy's server p
 9. **Tests not carried over.** They depend on `testify` and a large `testdata`
    tree.
 
-10. **Five operations added to the cgo layer**, in `internal/vips/vips.c` with
+10. **Six operations added to the cgo layer**, in `internal/vips/vips.c` with
     their bindings in `vips.go`. imgproxy has none of them.
 
     | | |
@@ -359,12 +387,18 @@ internal/timeout/        the one function iStore needed from imgproxy's server p
     | `vips_rotate_go` | arbitrary-angle rotation with a transparent background — `rotate` |
     | `vips_text_go` | Pango text as a coloured RGBA image, with an optional drop shadow — `watermark,text_` |
     | `vips_ensure_alpha_go` | add an opaque alpha band, so embedding leaves a transparent margin |
+    | `vips_average_hue_go` | per-band mean in one pass, alpha-weighted — `average-hue` |
 
     Three matching pipeline steps — `processing.adjust`, `processing.rotateFree`
     and `processing.roundCorners` — sit between `cropToResult` and `fixSize`.
 
 11. **EXIF reading added to `internal/imageinfo`.** imgproxy has no info
     endpoint; the TIFF/IFD walk that answers `image/info` is iStore's.
+
+12. **`vips.Image.Save` gained a `SaveOverrides` parameter.** imgproxy's save
+    options are all process-wide; OSS's `interlace` is per URL. The override
+    struct carries just that one field, so `internal/vips` still does not import
+    the options bag it was decoupled from in (2).
 
 ## Build requirements
 
@@ -553,6 +587,33 @@ really uses the colour it was given. On a copy whose border carries ±6 noise,
 
 Chained: `trim/resize,w_60/format,avif` gives a 60×40 AVIF.
 
+`interlace` read back from the encoded bytes — the JPEG `SOF` marker and the
+PNG `IHDR` interlace byte:
+
+```
+format,jpg                    baseline (SOF0)      830 B
+interlace,0/format,jpg        baseline (SOF0)      830 B
+interlace,1/format,jpg        PROGRESSIVE (SOF2)  1068 B
+format,png                    none                 851 B
+interlace,1/format,png        ADAM7               1100 B
+interlace,1/format,webp       encodes fine, no such thing in the format
+```
+
+`average-hue` against images whose mean is known by construction:
+
+```
+solid (120,60,180)                 0x783cb4   exact
+half red | half blue               0x800080   (127.5, 0, 127.5) rounded
+greyscale L=200                    0xc8c8c8
+half transparent | half green      0x00ff00   the transparent half does not vote
+a red square over 25% of a clear canvas   0xff0000
+uniform blue at alpha 128          0x0000ff
+fully transparent                  0x000000
+```
+
+Both queries are terminal: `info/format,png`, `resize,w_10/average-hue`,
+`average-hue,r_1` and `info/average-hue` all return 400.
+
 `rotate` on a 300×200 source. Every angle lands on the bounding box the
 trigonometry predicts, and only the multiples of 90 keep the frame:
 
@@ -662,20 +723,7 @@ deliberate — see the note on `Validate` vs `CheckEncoders` below.
 
 ## Not built yet
 
-Measured against OSS's own action list. Two actions are missing outright;
-everything else OSS documents is implemented.
-
-**Missing actions**
-
-- `interlace,0|1` (渐进显示). The engine *can* write progressive JPEG and
-  interlaced PNG, but only as a process-wide setting: `newSaveOptions()` reads
-  `ISTORE_JPEG_PROGRESSIVE` / `ISTORE_PNG_INTERLACED` from the package config at
-  save time. Exposing it per request means threading an override through
-  `vips.Image.Save`, which is the one signature this port deliberately
-  simplified.
-- `average-hue` (平均色调). Nothing exists for it. Needs a per-band mean from
-  libvips (`vips_avg` on each band, or `vips_stats`) plus a second query-response
-  path beside `info` — OSS answers this one as plain text `0xRRGGBB`, not JSON.
+Every action in OSS's own list is implemented. What is left is not an action.
 
 **Not an action**
 

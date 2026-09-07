@@ -164,7 +164,9 @@ func (p *watermarkProvider) build(spec watermarkSpec) (imagedata.ImageData, erro
 		}
 	}
 
-	return img.Save(imagetype.PNG, 100)
+	// Nothing about a watermark image wants progressive encoding: it is an
+	// intermediate the pipeline immediately reloads.
+	return img.Save(imagetype.PNG, 100, vips.SaveOverrides{})
 }
 
 // renderText draws the text layer, including its rotation.

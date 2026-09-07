@@ -335,6 +335,7 @@ func (img *Image) LoadThumbnail(imgdata imagedata.ImageData) error {
 func (img *Image) Save(
 	imgtype imagetype.Type,
 	quality int,
+	ov SaveOverrides,
 ) (imagedata.ImageData, error) {
 	target := C.vips_target_new_to_memory()
 
@@ -342,7 +343,7 @@ func (img *Image) Save(
 		C.vips_unref_target(target)
 	}
 
-	so := newSaveOptions()
+	so := newSaveOptions(ov)
 
 	err := C.int(0) //nolint:wastedassign
 	imgsize := C.size_t(0)
@@ -606,6 +607,33 @@ func (img *Image) Rotate(angle int) error {
 
 	img.swapAndUnref(tmp)
 	return nil
+}
+
+// AverageHue returns the mean colour of the image, in sRGB.
+//
+// It answers OSS's `image/average-hue`. Transparency is weighted rather than
+// ignored, so a logo on a transparent field reports the logo's colour instead of
+// the black stored behind it.
+func (img *Image) AverageHue() (color.RGB, error) {
+	var r, g, b C.double
+
+	if C.vips_average_hue_go(img.VipsImage, &r, &g, &b) != 0 {
+		return color.RGB{}, Error()
+	}
+
+	return color.RGB{R: clampByte(float64(r)), G: clampByte(float64(g)), B: clampByte(float64(b))}, nil
+}
+
+// clampByte rounds a channel mean into the 0..255 range. libvips means are
+// already inside it for uchar input, but a float or HDR source can land outside.
+func clampByte(v float64) uint8 {
+	switch {
+	case v <= 0:
+		return 0
+	case v >= 255:
+		return 255
+	}
+	return uint8(math.Round(v))
 }
 
 // EnsureAlpha adds an opaque alpha channel if the image has none, so that

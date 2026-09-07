@@ -536,10 +536,12 @@ func (p *Processor) saveImage(
 
 	// If we want and can fit the image into the specified number of bytes,
 	// let's do it.
+	ov := po.saveOverrides()
+
 	if maxBytes := po.MaxBytes(); maxBytes > 0 && outFormat.SupportsQuality() {
-		return saveImageToFitBytes(ctx, img, outFormat, quality, maxBytes, po.Options)
+		return saveImageToFitBytes(ctx, img, outFormat, quality, maxBytes, po.Options, ov)
 	}
 
 	// Otherwise, just save the image with the specified quality.
-	return img.Save(outFormat, quality)
+	return img.Save(outFormat, quality, ov)
 }

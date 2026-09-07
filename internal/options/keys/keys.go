@@ -65,6 +65,11 @@ const (
 
 	Quality = "quality"
 
+	// Interlace requests progressive JPEG / interlaced PNG for this request
+	// only. Absent means the process-wide default, which is why callers test
+	// Has() rather than reading a bool.
+	Interlace = "interlace"
+
 	MaxBytes = "max_bytes"
 
 	Background = "background"

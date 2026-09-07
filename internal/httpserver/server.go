@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"runtime"
 	"strconv"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	"github.com/kane/istore/internal/singleflight"
 	"github.com/kane/istore/internal/source"
 	"github.com/kane/istore/internal/vips"
+	"github.com/kane/istore/internal/vips/color"
 )
 
 // Config holds the knobs the HTTP layer itself needs. Image-processing config
@@ -163,6 +165,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case chain.IsInfo():
 		s.serveInfo(w, r)
+	case chain.IsAverageHue():
+		s.serveAverageHue(w, r)
 	case chain.IsEmpty():
 		s.serveOriginal(w, r)
 	default:
@@ -196,6 +200,66 @@ func (s *Server) serveOriginal(w http.ResponseWriter, r *http.Request) {
 	if _, err := f.WriteTo(w); err != nil {
 		slog.Debug("write failed", "path", r.URL.Path, "error", err)
 	}
+}
+
+// --------------------------------------------------------------- average-hue
+
+// serveAverageHue answers `x-oss-process=image/average-hue` with the image's
+// mean colour as `0xRRGGBB` in plain text — OSS returns it bare, not wrapped in
+// JSON the way info is.
+//
+// Unlike info this needs the pixels, so it takes a concurrency slot and decodes
+// the image. It is still far cheaper than a transform: one decode, no resize, no
+// encode, and a seven-byte body.
+func (s *Server) serveAverageHue(w http.ResponseWriter, r *http.Request) {
+	name, _, err := s.src.Stat(r.URL.Path)
+	if err != nil {
+		s.failSource(w, r, err)
+		return
+	}
+
+	hue, err := s.averageHue(name)
+	if err != nil {
+		s.fail(w, r, http.StatusUnprocessableEntity, "InvalidImage", "the image could not be read")
+		return
+	}
+
+	body := fmt.Sprintf("0x%02x%02x%02x", hue.R, hue.G, hue.B)
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.Header().Set("Cache-Control", s.cfg.CacheControl)
+	if r.Method == http.MethodHead {
+		return
+	}
+	w.Write([]byte(body))
+}
+
+// averageHue decodes one frame and returns its mean colour.
+func (s *Server) averageHue(path string) (color.RGB, error) {
+	s.acquire()
+	defer s.release()
+
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	defer vips.Cleanup()
+
+	data, err := imagedata.NewFromFile(path)
+	if err != nil {
+		return color.RGB{}, err
+	}
+	defer data.Close()
+
+	img := new(vips.Image)
+	defer img.Clear()
+
+	// One frame is enough: an animation's mean colour is not worth decoding
+	// every frame for, and OSS reports a single value too.
+	if err := img.Load(data, 1.0, 0, 1); err != nil {
+		return color.RGB{}, err
+	}
+
+	return img.AverageHue()
 }
 
 // ---------------------------------------------------------------------- info

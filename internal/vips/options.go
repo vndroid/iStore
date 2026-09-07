@@ -19,14 +19,38 @@ func newLoadOptions(shrink float64, page, pages int) C.ImgproxyLoadOptions {
 	}
 }
 
-// newSaveOptions builds the C-side save options from the process-wide config.
+// SaveOverrides are per-request adjustments to the process-wide save config.
+//
+// Everything else in ImgproxySaveOptions is a deployment decision — encoder
+// effort, quantisation, WebP preset — and stays in the config. Interlacing is
+// the exception because OSS exposes it per URL (`image/interlace,1`), so it
+// needs a way in that does not mean handing this package the options bag it was
+// deliberately decoupled from.
+//
+// A nil field means "whatever the config says".
+type SaveOverrides struct {
+	// Interlace turns on progressive JPEG and interlaced PNG.
+	Interlace *bool
+}
+
+// newSaveOptions builds the C-side save options from the process-wide config,
+// with any per-request overrides applied on top.
+//
 // imgproxy took a *options.Options here but never read it; iStore drops the
 // parameter so the whole options package stays out of the dependency graph.
-func newSaveOptions() C.ImgproxySaveOptions {
-	return C.ImgproxySaveOptions{
-		JpegProgressive: gbool(config.JpegProgressive),
+func newSaveOptions(ov SaveOverrides) C.ImgproxySaveOptions {
+	progressive := config.JpegProgressive
+	interlaced := config.PngInterlaced
 
-		PngInterlaced:         gbool(config.PngInterlaced),
+	if ov.Interlace != nil {
+		progressive = *ov.Interlace
+		interlaced = *ov.Interlace
+	}
+
+	return C.ImgproxySaveOptions{
+		JpegProgressive: gbool(progressive),
+
+		PngInterlaced:         gbool(interlaced),
 		PngQuantize:           gbool(config.PngQuantize),
 		PngQuantizationColors: C.int(config.PngQuantizationColors),
 

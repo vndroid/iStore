@@ -134,6 +134,55 @@ func TestIsInfo(t *testing.T) {
 	}
 }
 
+func TestIsAverageHue(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"image/average-hue":              true,
+		"image/info":                     false,
+		"image/format,avif":              false,
+		"":                               false,
+		"image/average-hue/resize,w_100": false,
+	} {
+		c, err := Parse(raw)
+		if err != nil {
+			t.Fatalf("Parse(%q): %v", raw, err)
+		}
+		if got := c.IsAverageHue(); got != want {
+			t.Errorf("IsAverageHue(%q) = %v, want %v", raw, got, want)
+		}
+	}
+
+	// The two queries are mutually exclusive: the server dispatches on them in
+	// turn, and a chain answering true to both would take whichever branch came
+	// first.
+	c, _ := Parse("image/average-hue")
+	if c.IsInfo() {
+		t.Error("average-hue must not read as info")
+	}
+}
+
+func TestQueriesAreTerminal(t *testing.T) {
+	// Both describe the source rather than transforming it, so neither can be
+	// one link of a chain — there would be nothing for the rest to act on — and
+	// neither takes parameters.
+	for _, raw := range []string{
+		"image/info/format,png",
+		"image/resize,w_10/info",
+		"image/info,x_1",
+		"image/average-hue/format,png",
+		"image/resize,w_10/average-hue",
+		"image/average-hue,r_1",
+		"image/info/average-hue",
+	} {
+		c, err := Parse(raw)
+		if err != nil {
+			continue
+		}
+		if err := c.Validate(); err == nil {
+			t.Errorf("Validate(%q): expected an error", raw)
+		}
+	}
+}
+
 func TestApplySetsFormat(t *testing.T) {
 	c, err := Parse("image/format,avif")
 	if err != nil {

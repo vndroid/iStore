@@ -7,6 +7,7 @@ import (
 	"github.com/kane/istore/internal/options"
 	"github.com/kane/istore/internal/options/keys"
 	"github.com/kane/istore/internal/security"
+	"github.com/kane/istore/internal/vips"
 	"github.com/kane/istore/internal/vips/color"
 )
 
@@ -175,6 +176,22 @@ func (po ProcessingOptions) Pixelate() int {
 }
 
 // Brightness is added to every colour channel on the 0..255 scale. 0 is neutral.
+// saveOverrides collects the encoder settings this request overrides.
+//
+// Only interlacing is per-request: everything else in the save options is a
+// deployment decision. An absent key leaves the process-wide default alone,
+// which is why this tests Has rather than reading a bool with a default.
+func (po ProcessingOptions) saveOverrides() vips.SaveOverrides {
+	var ov vips.SaveOverrides
+
+	if po.Has(keys.Interlace) {
+		v := po.GetBool(keys.Interlace, false)
+		ov.Interlace = &v
+	}
+
+	return ov
+}
+
 // RotateFree is an arbitrary rotation angle in degrees, 0 when none was asked
 // for. Distinct from Rotate, which is limited to multiples of 90.
 func (po ProcessingOptions) RotateFree() float64 {

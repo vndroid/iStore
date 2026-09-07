@@ -22,6 +22,7 @@ func saveImageToFitBytes(
 	startQuality int,
 	target int,
 	o *options.Options,
+	ov vips.SaveOverrides,
 ) (imagedata.ImageData, error) {
 	var newQuality int
 
@@ -43,7 +44,7 @@ func saveImageToFitBytes(
 
 		o.Set(keys.Quality, quality)
 
-		imgdata, err := img.Save(format, quality)
+		imgdata, err := img.Save(format, quality, ov)
 		if err != nil {
 			return nil, err
 		}

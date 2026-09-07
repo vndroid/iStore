@@ -455,3 +455,35 @@ func TestTrimNeedsNoSourceSize(t *testing.T) {
 		t.Error("trim works from the pixels, not the declared size, so it must not force a header read")
 	}
 }
+
+func TestInterlace(t *testing.T) {
+	if got := applyChain(t, "image/interlace,1").GetBool(keys.Interlace, false); !got {
+		t.Error("interlace,1 should set the key true")
+	}
+	if got := applyChain(t, "image/interlace,0").GetBool(keys.Interlace, true); got {
+		t.Error("interlace,0 should set the key false")
+	}
+
+	// Absent, the key must stay unset rather than defaulting to false: the save
+	// path reads Has() to decide whether to override the process-wide setting at
+	// all, so writing false would quietly disable a deployment's
+	// ISTORE_JPEG_PROGRESSIVE.
+	if applyChain(t, "image/resize,w_100").Has(keys.Interlace) {
+		t.Error("no interlace action should leave the key unset")
+	}
+
+	for _, raw := range []string{
+		"image/interlace",
+		"image/interlace,2",
+		"image/interlace,-1",
+		"image/interlace,yes",
+		"image/interlace,i_1",
+		"image/interlace,1,0",
+	} {
+		if c, err := Parse(raw); err == nil {
+			if err := c.Validate(); err == nil {
+				t.Errorf("Validate(%q): expected an error", raw)
+			}
+		}
+	}
+}

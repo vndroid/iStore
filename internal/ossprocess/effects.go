@@ -330,3 +330,31 @@ func parseSignedHundred(a Action, name string) (int, error) {
 
 	return v, nil
 }
+
+// parseInterlace reads `image/interlace,<0|1>`: whether to encode the result so
+// it can be displayed progressively as it downloads.
+//
+// OSS documents this for JPEG only, where it means a progressive scan order.
+// iStore applies it to PNG too, where the equivalent is Adam7 interlacing: the
+// caller is asking for the same behaviour, the encoder has it, and refusing
+// would be a distinction without a difference. It has no effect on any other
+// output format.
+func parseInterlace(a Action) (bool, error) {
+	if len(a.Params) != 1 {
+		return false, fmt.Errorf("\"interlace\" takes exactly one value, 0 or 1")
+	}
+
+	p := a.Params[0]
+	if p.Key != "" {
+		return false, fmt.Errorf("\"interlace\" takes a bare value, got %q", p.Key)
+	}
+
+	switch p.Value {
+	case "0":
+		return false, nil
+	case "1":
+		return true, nil
+	}
+
+	return false, fmt.Errorf("\"interlace\" must be 0 or 1, got %q", p.Value)
+}

@@ -83,6 +83,7 @@ int vips_linear_go(VipsImage *in, VipsImage **out, double a, double b);
 int vips_round_corners_go(VipsImage *in, VipsImage **out, double radius);
 int vips_rotate_go(VipsImage *in, VipsImage **out, double angle);
 int vips_ensure_alpha_go(VipsImage *in, VipsImage **out);
+int vips_average_hue_go(VipsImage *in, double *r, double *g, double *b);
 int vips_text_go(VipsImage **out, const char *text, const char *font, int dpi, RGB color,
     double shadow_opacity, int shadow_offset, double shadow_sigma);
 
