@@ -714,6 +714,39 @@ func (img *Image) ApplyFilters(blurSigma, sharpSigma float64, pixelatePixels int
 	return nil
 }
 
+// Linear applies out = in*a + b to the colour bands, leaving alpha untouched.
+//
+// It is the primitive behind brightness and contrast: both are linear, so a
+// caller wanting both folds them into a single a/b pair.
+func (img *Image) Linear(a, b float64) error {
+	var tmp *C.VipsImage
+
+	if C.vips_linear_go(img.VipsImage, &tmp, C.double(a), C.double(b)) != 0 {
+		return Error()
+	}
+
+	img.swapAndUnref(tmp)
+
+	return nil
+}
+
+// RoundCorners multiplies the image's alpha by a rounded-rectangle mask of the
+// given corner radius, in pixels.
+//
+// A radius of half the shorter side yields an ellipse — which is how a circular
+// crop is made: square the image first, then call this.
+func (img *Image) RoundCorners(radius float64) error {
+	var tmp *C.VipsImage
+
+	if C.vips_round_corners_go(img.VipsImage, &tmp, C.double(radius)) != 0 {
+		return Error()
+	}
+
+	img.swapAndUnref(tmp)
+
+	return nil
+}
+
 // Type returns the current colorspace interpretation of the image.
 func (img *Image) Type() Interpretation {
 	return Interpretation(img.VipsImage.Type)

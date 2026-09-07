@@ -27,9 +27,11 @@ func (p *Processor) mainPipeline() Pipeline {
 		p.rotateAndFlip,
 		p.cropToResult,
 		p.applyFilters,
+		p.adjust,
 		p.extend,
 		p.extendAspectRatio,
 		p.padding,
+		p.roundCorners,
 		p.fixSize,
 		p.flatten,
 		p.watermark,
@@ -293,8 +295,12 @@ func (p *Processor) determineOutputFormat(
 	animated bool,
 ) (imagetype.Type, error) {
 	// Check if the image may have transparency
+	// circle and rounded-corners punch holes in an otherwise opaque image, so
+	// they have to count here too: without them a `circle/format,auto` request
+	// would be answered with JPEG and the corners flattened to the background.
 	expectTransparency := !po.ShouldFlatten() &&
-		(img.HasAlpha() || po.PaddingEnabled() || po.ExtendEnabled())
+		(img.HasAlpha() || po.PaddingEnabled() || po.ExtendEnabled() ||
+			po.CircleEnabled() || po.RoundedCornersEnabled())
 
 	format := po.Format()
 

@@ -79,6 +79,9 @@ int vips_trim(VipsImage *in, VipsImage **out, double threshold, gboolean smart, 
 int vips_apply_filters(VipsImage *in, VipsImage **out, double blur_sigma, double sharp_sigma,
     int pixelate_pixels);
 
+int vips_linear_go(VipsImage *in, VipsImage **out, double a, double b);
+int vips_round_corners_go(VipsImage *in, VipsImage **out, double radius);
+
 int vips_flatten_go(VipsImage *in, VipsImage **out, RGB bg);
 
 int vips_replicate_go(VipsImage *in, VipsImage **out, int across, int down, int centered);

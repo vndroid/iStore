@@ -10,9 +10,10 @@
 // The first segment names the service; only "image" exists here. Parameters are
 // mostly `key_value` pairs, but a few actions (format) take a bare value.
 //
-// iStore implements `resize`, `crop`, `indexcrop`, `rotate`, `auto-orient`,
-// `blur`, `sharpen`, `pixelate`, `trim`, `watermark`, `quality`, `format` and
-// `info`. Everything else
+// iStore implements `resize`, `crop`, `indexcrop`, `trim`, `rotate`,
+// `auto-orient`, `blur`, `sharpen`, `pixelate`, `bright`, `contrast`, `circle`,
+// `rounded-corners`, `watermark`, `quality`, `format` and `info`. Everything
+// else
 // parses into a
 // generic Action and is rejected by Chain.Validate with a clear message, rather
 // than being silently ignored — an unrecognised transform that returns the
@@ -185,6 +186,18 @@ func (c *Chain) Validate() error {
 			if _, err := parseTrim(a); err != nil {
 				return err
 			}
+		case "bright":
+			if _, err := parseBright(a); err != nil {
+				return err
+			}
+		case "contrast":
+			if _, err := parseContrast(a); err != nil {
+				return err
+			}
+		case "circle", "rounded-corners":
+			if _, err := parseRadius(a); err != nil {
+				return err
+			}
 		case "indexcrop":
 			if _, err := parseIndexCrop(a); err != nil {
 				return err
@@ -197,7 +210,24 @@ func (c *Chain) Validate() error {
 			return fmt.Errorf("unsupported action %q", a.Name)
 		}
 	}
+
+	// Both write an alpha mask over the finished image, and the pipeline applies
+	// one mask, not two. Rather than silently letting circle win, say so.
+	if c.has("circle") && c.has("rounded-corners") {
+		return fmt.Errorf("\"circle\" and \"rounded-corners\" cannot be combined")
+	}
+
 	return nil
+}
+
+// has reports whether the chain contains an action by that name.
+func (c *Chain) has(name string) bool {
+	for _, a := range c.Actions {
+		if a.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // ossFormatNames maps the OSS spelling of a format to iStore's type.
@@ -387,6 +417,34 @@ func (c *Chain) Apply(o *options.Options, srcW, srcH int) error {
 				return err
 			}
 			tr.apply(o)
+
+		case "bright":
+			offset, err := parseBright(a)
+			if err != nil {
+				return err
+			}
+			o.Set(keys.Brightness, offset)
+
+		case "contrast":
+			factor, err := parseContrast(a)
+			if err != nil {
+				return err
+			}
+			o.Set(keys.Contrast, factor)
+
+		case "circle":
+			r, err := parseRadius(a)
+			if err != nil {
+				return err
+			}
+			o.Set(keys.CircleRadius, r)
+
+		case "rounded-corners":
+			r, err := parseRadius(a)
+			if err != nil {
+				return err
+			}
+			o.Set(keys.RoundedCornersRadius, r)
 
 		case "indexcrop":
 			ic, err := parseIndexCrop(a)

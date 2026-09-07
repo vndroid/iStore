@@ -264,3 +264,69 @@ func (t *Trim) apply(o *options.Options) {
 	o.Set(keys.TrimEqualHor, t.EqualHor)
 	o.Set(keys.TrimEqualVer, t.EqualVer)
 }
+
+// parseBright reads `image/bright,<-100..100>` and returns the offset to add to
+// every colour channel on the 0..255 scale.
+//
+// OSS gives the range and says 0 is the original, without defining the unit.
+// Mapping v * 2.55 makes the two ends mean what their names imply — bright,100
+// is white, bright,-100 is black — and keeps the middle of the range roughly
+// linear in perceived lightness.
+//
+// This is a calibration, not a specification: an image brightened here will not
+// be bit-identical to the same URL on OSS.
+func parseBright(a Action) (float64, error) {
+	v, err := parseSignedHundred(a, "bright")
+	if err != nil {
+		return 0, err
+	}
+	return float64(v) * 255.0 / 100.0, nil
+}
+
+// parseContrast reads `image/contrast,<-100..100>` and returns the multiplier to
+// apply around mid-grey.
+//
+// The mapping is the standard contrast curve,
+//
+//	f = 259*(c + 255) / (255*(259 - c)),  c = v * 2.55
+//
+// which is 1 at v=0, collapses to a flat mid-grey at v=-100, and rises steeply
+// (to ~129) at v=100 so the top of the range is a hard threshold rather than a
+// mild increase. A plain linear multiplier would make the positive half nearly
+// useless: doubling contrast is barely visible, and the interesting values all
+// sit above 4x.
+//
+// Like bright, this is a calibration rather than a match to OSS's own output.
+func parseContrast(a Action) (float64, error) {
+	v, err := parseSignedHundred(a, "contrast")
+	if err != nil {
+		return 0, err
+	}
+
+	c := float64(v) * 255.0 / 100.0
+
+	return 259.0 * (c + 255.0) / (255.0 * (259.0 - c)), nil
+}
+
+// parseSignedHundred reads the bare `-100..100` value both bright and contrast
+// take.
+func parseSignedHundred(a Action, name string) (int, error) {
+	if len(a.Params) != 1 {
+		return 0, fmt.Errorf("%q takes exactly one value, e.g. %s,20", name, name)
+	}
+
+	p := a.Params[0]
+	if p.Key != "" {
+		return 0, fmt.Errorf("%q takes a bare value, got %q", name, p.Key)
+	}
+
+	v, err := strconv.Atoi(p.Value)
+	if err != nil {
+		return 0, fmt.Errorf("%q must be a number, got %q", name, p.Value)
+	}
+	if v < -100 || v > 100 {
+		return 0, fmt.Errorf("%q must be between -100 and 100, got %d", name, v)
+	}
+
+	return v, nil
+}

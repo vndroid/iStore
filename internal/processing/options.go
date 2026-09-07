@@ -174,6 +174,32 @@ func (po ProcessingOptions) Pixelate() int {
 	return po.GetInt(keys.Pixelate, 1)
 }
 
+// Brightness is added to every colour channel on the 0..255 scale. 0 is neutral.
+func (po ProcessingOptions) Brightness() float64 {
+	return po.GetFloat(keys.Brightness, 0.0)
+}
+
+// Contrast multiplies every colour channel around mid-grey. 1 is neutral.
+func (po ProcessingOptions) Contrast() float64 {
+	return po.GetFloat(keys.Contrast, 1.0)
+}
+
+func (po ProcessingOptions) CircleEnabled() bool {
+	return po.Has(keys.CircleRadius)
+}
+
+func (po ProcessingOptions) CircleRadius() int {
+	return po.GetInt(keys.CircleRadius, 0)
+}
+
+func (po ProcessingOptions) RoundedCornersEnabled() bool {
+	return po.Has(keys.RoundedCornersRadius)
+}
+
+func (po ProcessingOptions) RoundedCornersRadius() int {
+	return po.GetInt(keys.RoundedCornersRadius, 0)
+}
+
 func (po ProcessingOptions) PreferWebP() bool {
 	return po.GetBool(keys.PreferWebP, false)
 }

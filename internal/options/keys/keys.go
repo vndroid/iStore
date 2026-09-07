@@ -67,6 +67,17 @@ const (
 	Sharpen  = "sharpen"
 	Pixelate = "pixelate"
 
+	// Brightness is an offset added to every colour channel on the 0..255
+	// scale; Contrast is a multiplier around mid-grey. Both are iStore
+	// additions, absent from imgproxy.
+	Brightness = "brightness"
+	Contrast   = "contrast"
+
+	// Corner radius, in pixels, of the alpha mask applied near the end of the
+	// pipeline. CircleRadius additionally squares the image first.
+	CircleRadius         = "circle.radius"
+	RoundedCornersRadius = "rounded_corners.radius"
+
 	WatermarkOpacity  = "watermark.opacity"
 	WatermarkPosition = "watermark.position"
 	WatermarkXOffset  = "watermark" + SuffixXOffset

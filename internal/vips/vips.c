@@ -1378,3 +1378,157 @@ vips_unref_target(VipsTarget *target)
 {
   VIPS_UNREF(target);
 }
+
+// vips_linear_go applies out = in * a + b to the colour bands only, leaving any
+// alpha channel exactly as it was, and casts the result back to the input's band
+// format so the clipping happens once, at the end.
+//
+// This is the primitive behind `bright` and `contrast`. Both are single linear
+// transforms, so the caller folds them into one a/b pair rather than making two
+// passes over the pixels.
+int
+vips_linear_go(VipsImage *in, VipsImage **out, double a, double b)
+{
+  VipsImage *base = vips_image_new();
+  VipsImage **t = (VipsImage **) vips_object_local_array(VIPS_OBJECT(base), 6);
+
+  VipsBandFormat format = in->BandFmt;
+  VipsInterpretation interpretation = in->Type;
+
+  VipsImage *colour = in;
+  VipsImage *alpha = NULL;
+
+  if (vips_image_hasalpha(in)) {
+    // Scaling alpha along with the colours would make a brightened image
+    // translucent, which is not what either OSS action means.
+    if (
+        vips_extract_band(in, &t[0], 0, "n", in->Bands - 1, NULL) ||
+        vips_extract_band(in, &t[1], in->Bands - 1, "n", 1, NULL)) {
+      VIPS_UNREF(base);
+      return 1;
+    }
+
+    colour = t[0];
+    alpha = t[1];
+  }
+
+  if (vips_linear1(colour, &t[2], a, b, NULL)) {
+    VIPS_UNREF(base);
+    return 1;
+  }
+
+  VipsImage *res = t[2];
+
+  if (alpha != NULL) {
+    if (vips_bandjoin2(res, alpha, &t[3], NULL)) {
+      VIPS_UNREF(base);
+      return 1;
+    }
+
+    res = t[3];
+  }
+
+  // vips_linear works in float; casting back to the input format is what clips
+  // an over-bright pixel to white instead of wrapping it around.
+  if (vips_cast(res, &t[4], format, NULL)) {
+    VIPS_UNREF(base);
+    return 1;
+  }
+
+  int ret = vips_copy(t[4], out, "interpretation", interpretation, NULL);
+
+  VIPS_UNREF(base);
+
+  return ret;
+}
+
+// vips_round_corners_go builds a rounded-rectangle coverage mask the size of
+// `in` and uses it as the image's alpha channel. A radius of half the shorter
+// side turns the rectangle into an ellipse, which is how `circle` is built: crop
+// to a square first, then call this.
+//
+// The mask is arithmetic rather than a drawn or rasterised shape, so it needs
+// nothing from librsvg and works on any libvips build. It evaluates the signed
+// distance to the rounded rectangle,
+//
+//	d = |max(|p - centre| - inset, 0)| - radius
+//
+// and turns it into coverage with clamp(radius + 0.5 - d), which leaves a
+// one-pixel antialiased band along the arc instead of a staircase.
+int
+vips_round_corners_go(VipsImage *in, VipsImage **out, double radius)
+{
+  VipsImage *base = vips_image_new();
+  VipsImage **t = (VipsImage **) vips_object_local_array(VIPS_OBJECT(base), 20);
+
+  int w = in->Xsize;
+  int h = in->Ysize;
+
+  // Distances are measured between pixel centres, so the half-extent of a
+  // w-pixel row is (w - 1) / 2 and an even-sided image has its centre between
+  // two pixels.
+  double cx = (w - 1) / 2.0;
+  double cy = (h - 1) / 2.0;
+
+  // Where the straight part of each edge ends and the corner arc begins.
+  double bx = cx - radius;
+  double by = cy - radius;
+  if (bx < 0.0)
+    bx = 0.0;
+  if (by < 0.0)
+    by = 0.0;
+
+  double ones[2] = { 1.0, 1.0 };
+  double centre[2] = { -cx, -cy };
+  double inset[2] = { -bx, -by };
+
+  if (
+      vips_xyz(&t[0], w, h, NULL) ||
+      vips_linear(t[0], &t[1], ones, centre, 2, NULL) ||
+      vips_abs(t[1], &t[2], NULL) ||
+      // q = max(|p - centre| - inset, 0). libvips has no elementwise max with a
+      // constant, so multiply by the 0/1 mask of the comparison instead.
+      vips_linear(t[2], &t[3], ones, inset, 2, NULL) ||
+      vips_moreeq_const1(t[3], &t[4], 0.0, NULL) ||
+      vips_linear1(t[4], &t[5], 1.0 / 255.0, 0.0, NULL) ||
+      vips_multiply(t[3], t[5], &t[6], NULL) ||
+      // |q|, as the square root of the sum of the two squared bands. libvips
+      // has no sqrt in VipsOperationMath, so raise to 0.5 instead.
+      vips_multiply(t[6], t[6], &t[7], NULL) ||
+      vips_extract_band(t[7], &t[8], 0, "n", 1, NULL) ||
+      vips_extract_band(t[7], &t[9], 1, "n", 1, NULL) ||
+      vips_add(t[8], t[9], &t[10], NULL) ||
+      vips_pow_const1(t[10], &t[11], 0.5, NULL) ||
+      // coverage = clamp(radius + 0.5 - |q|) * 255; the cast does the clamping.
+      vips_linear1(t[11], &t[12], -255.0, (radius + 0.5) * 255.0, NULL) ||
+      vips_cast(t[12], &t[13], VIPS_FORMAT_UCHAR, NULL)) {
+    VIPS_UNREF(base);
+    return 1;
+  }
+
+  VipsImage *mask = t[13];
+  VipsImage *colour = in;
+
+  if (vips_image_hasalpha(in)) {
+    // Multiply into the existing alpha rather than replacing it, so a source
+    // that was already partly transparent stays that way inside the corners.
+    if (
+        vips_extract_band(in, &t[14], 0, "n", in->Bands - 1, NULL) ||
+        vips_extract_band(in, &t[15], in->Bands - 1, "n", 1, NULL) ||
+        vips_linear1(t[15], &t[16], 1.0 / 255.0, 0.0, NULL) ||
+        vips_multiply(t[16], mask, &t[17], NULL) ||
+        vips_cast(t[17], &t[18], VIPS_FORMAT_UCHAR, NULL)) {
+      VIPS_UNREF(base);
+      return 1;
+    }
+
+    colour = t[14];
+    mask = t[18];
+  }
+
+  int ret = vips_bandjoin2(colour, mask, out, NULL);
+
+  VIPS_UNREF(base);
+
+  return ret;
+}

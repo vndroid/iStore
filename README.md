@@ -4,8 +4,9 @@ An image service that speaks the Alibaba Cloud OSS `x-oss-process` URL grammar,
 built on libvips. The image engine is ported from
 [imgproxy](https://github.com/imgproxy/imgproxy) (Apache-2.0); see `NOTICE`.
 
-Status: **working.** `resize`, `crop`, `indexcrop`, `rotate`, `auto-orient`,
-`blur`, `sharpen`, `pixelate`, `trim`, `watermark`, `quality`, `format` and
+Status: **working.** `resize`, `crop`, `indexcrop`, `trim`, `rotate`,
+`auto-orient`, `blur`, `sharpen`, `pixelate`, `bright`, `contrast`, `circle`,
+`rounded-corners`, `watermark`, `quality`, `format` and
 `info` are served over HTTP from a local directory, with a bounded disk cache, request coalescing,
 a concurrency limit and `Accept`-based format negotiation.
 
@@ -91,6 +92,41 @@ the subject centred rather than flush.
 > it fixes a class of source file rather than restyling it: screenshots and
 > exported logos routinely carry a band of background that no amount of resizing
 > removes, and trimming at serve time avoids re-cutting the originals.
+
+**`bright`** — `-100..100`, `0` unchanged. The value becomes an offset on the
+0..255 scale (`v * 2.55`), so `bright,100` is white and `bright,-100` is black.
+
+**`contrast`** — `-100..100`, `0` unchanged. Mapped through the standard contrast
+curve `259*(c+255) / (255*(259-c))` with `c = v * 2.55`: `-100` collapses to a
+flat mid-grey, `100` reaches ~129x and acts as a threshold. A plain linear
+multiplier would waste the positive half — doubling contrast is barely visible,
+and the interesting values all sit above 4x.
+
+> Both are calibrations, not specifications: OSS states the ranges but not the
+> units, so output will not be bit-identical to OSS. Alpha is left alone, so
+> brightening a transparent PNG does not make it opaque. When both are given they
+> are folded into **one** linear pass, which matters: applied separately, a
+> `contrast,-100/bright,50` chain would clip twice.
+
+**`circle`** — `r_1..4096`. Returns a `(2r+1)`-square containing the inscribed
+circle. A radius past what the image can hold is clamped to the largest
+inscribed circle, as in OSS — a 300×200 source with `circle,r_4096` gives
+199×199, i.e. `r = (min edge - 1) / 2`.
+
+**`rounded-corners`** — `r_1..4096`. Keeps the frame and rounds the corners; the
+radius is clamped to half the shorter side, at which point the shape is a
+stadium.
+
+> Both cut transparent pixels out of the result, so the output format matters:
+> PNG and WebP keep the transparency, JPEG gets the background colour (white by
+> default) — OSS behaves the same way. `circle/format,auto` therefore negotiates
+> to an alpha-capable format rather than JPEG. An image that was *already* partly
+> transparent stays that way: the mask multiplies into the existing alpha instead
+> of replacing it.
+>
+> The mask is arithmetic — a signed-distance field evaluated with libvips
+> operations — rather than a rasterised shape, so it needs nothing from librsvg
+> and gets a one-pixel antialiased arc for free.
 
 **`watermark`** — `image_<base64url of an object key>`, `t_0..100` opacity,
 `g_` anchor (default `se`), `x_`/`y_` offsets. The watermark is read from the
@@ -262,6 +298,15 @@ internal/timeout/        the one function iStore needed from imgproxy's server p
 
 9. **Tests not carried over.** They depend on `testify` and a large `testdata`
    tree.
+
+10. **Two operations added to the cgo layer.** `vips_linear_go` (a linear
+    transform of the colour bands, leaving alpha alone) and
+    `vips_round_corners_go` (a rounded-rectangle alpha mask) in
+    `internal/vips/vips.c`, with `Image.Linear` and `Image.RoundCorners` in
+    `vips.go`. imgproxy has neither; they are what `bright`/`contrast` and
+    `circle`/`rounded-corners` are built on. Two matching pipeline steps,
+    `processing.adjust` and `processing.roundCorners`, sit between
+    `applyFilters` and `fixSize`.
 
 ## Build requirements
 
@@ -446,6 +491,44 @@ really uses the colour it was given. On a copy whose border carries ±6 noise,
 
 Chained: `trim/resize,w_60/format,avif` gives a 60×40 AVIF.
 
+`circle` and `rounded-corners` on a 300×200 solid blue source, reading the alpha
+channel of the PNG result:
+
+```
+circle,r_50           101x101   centre a=255, corner a=0, edge pixel a=127
+circle,r_4096         199x199   clamped to (min edge - 1) / 2 = 99, as OSS does
+rounded-corners,r_30  300x200   corner a=0, mid-edge a=127, centre a=255
+rounded-corners,r_4096 300x200  clamped to half the shorter side: a stadium,
+                                so the top edge midpoint stays a=255
+```
+
+The `a=127` readings are the antialiased arc: exactly one pixel wide, at the
+radius, in both shapes. On a source that is already 50% transparent, `circle`
+leaves the inside at `a=128` rather than pushing it to 255 — the mask multiplies.
+Output format follows: `circle,r_40/format,auto` with `Accept: image/avif,...`
+returns AVIF RGBA; the same request without `circle` returns AVIF RGB. With
+`format,jpg` the outside is white. On a 3-frame animated GIF with
+`ISTORE_MAX_ANIMATION_FRAMES=20`, `circle,r_20/format,webp` gives a 3-frame
+41×41 WebP with every frame masked.
+
+`bright` and `contrast` on a 256×64 image holding a full 0..255 grey ramp,
+sampling x = 0, 64, 128, 192, 255:
+
+```
+(none)              [  0,  64, 128, 192, 255]
+bright,20           [ 51, 115, 179, 243, 255]   +51 = 20 * 2.55
+bright,100          [255, 255, 255, 255, 255]
+bright,-100         [  0,   0,   0,   0,   0]
+contrast,0          [  0,  64, 128, 192, 255]   byte-identical to no action
+contrast,-100       [127, 127, 127, 127, 127]
+contrast,50         [  0,   0, 128, 255, 255]
+bright,20/contrast,20 [ 0,  83, 179, 255, 255]
+```
+
+A 16-bit grey source gives the same numbers, because the step converts to 8-bit
+sRGB before applying the pivot. On an RGBA source, `bright,50` and `contrast,50`
+both leave alpha at 128.
+
 `pixelate,1` returns bytes identical to no pixelate at all (same SHA-256 of the
 decoded pixels). Chained: `crop,w_120,h_80,g_nw/pixelate,20` gives 120×80 with
 exactly 24 colours, i.e. 6×4 blocks.
@@ -473,15 +556,59 @@ deliberate — see the note on `Validate` vs `CheckEncoders` below.
 
 ## Not built yet
 
-- `padding`, `extend`, focus-point gravity: the pipeline has all three, each
-  needs only a parameter translation in `ossprocess.Chain.Apply`.
-- `circle`, `rounded-corners`, `bright`, `contrast`: no equivalent in the
-  pipeline. These need new libvips calls exposed through `internal/vips`.
-- `watermark,text_`: needs a text renderer, see above.
+Measured against OSS's own action list. Two actions are missing outright, three
+are partial, and one source format does not load on this build.
+
+**Missing actions**
+
+- `interlace,0|1` (渐进显示). The engine *can* write progressive JPEG and
+  interlaced PNG, but only as a process-wide setting: `newSaveOptions()` reads
+  `ISTORE_JPEG_PROGRESSIVE` / `ISTORE_PNG_INTERLACED` from the package config at
+  save time. Exposing it per request means threading an override through
+  `vips.Image.Save`, which is the one signature this port deliberately
+  simplified.
+- `average-hue` (平均色调). Nothing exists for it. Needs a per-band mean from
+  libvips (`vips_avg` on each band, or `vips_stats`) plus a second query-response
+  path beside `info` — OSS answers this one as plain text `0xRRGGBB`, not JSON.
+
+**Partial actions**
+
+- `rotate` accepts only multiples of 90; OSS accepts any angle in 0..360 and
+  grows the canvas to fit. Arbitrary angles need `vips_rotate` with a background
+  colour and a new options key, not the current `VipsAngle`-based `Rotate`.
+- `watermark` implements `image_`, `t_`, `g_`, `x_`, `y_`. OSS also has
+  `voffset_` (centre-line offset), `P_` (scale the watermark to a percentage of
+  the base image), `fill_`/`padx_`/`pady_` (tiling), the text watermark
+  (`text_`, `type_`, `color_`, `size_`, `shadow_`, `rotate_`) and the mixed
+  image+text parameters (`order_`, `align_`, `interval_`). `P_` and `voffset_`
+  are parameter translation; tiling needs `vips_replicate` in the watermark
+  step; text needs a renderer libvips has via Pango but imgproxy's binding does
+  not expose.
+- `info` returns the eight basic fields. OSS merges the source's EXIF tags into
+  the same `{"value": ...}` map when the image has them — `Orientation`,
+  `DateTime`, `GPSLatitude`, `Software` and so on. `internal/imagemeta` is
+  already vendored, so this is reading tags rather than new machinery.
+
+**Not an action**
+
+- `style/<name>` — OSS's saved presets, defined in its console. Rejected with an
+  explicit message rather than ignored. Would need a config file mapping a name
+  to a chain.
 - Request signing. `internal/security` carries imgproxy's implementation and it
   is wired to `ISTORE_KEY` / `ISTORE_SALT`, but nothing calls it: with a local
   root and a path-traversal-safe resolver there is no URL to forge. That changes
   the day a remote source is added.
+- `padding`, `extend` and focus-point gravity are imgproxy features with no OSS
+  spelling. `extend` is already reachable through `resize,m_pad`; the other two
+  would need an iStore-invented action name.
+
+**Known defect**
+
+- **JPEG XL does not load on libvips 8.15.** `vips_jxlload_source_go` passes
+  `page` and `n`, and `jxlload_source` gained those only in libvips 8.16, so a
+  JXL *source* fails with `jxlload_source: no property named 'page'` — reported
+  as 422. JXL *output* is unaffected. Fix is either dropping the two options
+  from that one shim or raising the stated libvips floor.
 
 ## Two design notes worth keeping
 
