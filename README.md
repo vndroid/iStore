@@ -13,6 +13,10 @@ Status: **working.** `resize`, `crop`, `indexcrop`, `trim`, `rotate`,
 a concurrency limit, `Accept`-based format negotiation and optional HMAC request
 signing.
 
+**Migrating from OSS?** `DIFF.md` is the checklist of everywhere the two differ:
+what is missing, what is added, which numbers are approximations rather than
+matches, and which defaults are stricter here than on OSS.
+
 ## Usage
 
 ```sh
