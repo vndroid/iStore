@@ -23,6 +23,33 @@ func newSaveFormatError(format imagetype.Type) error {
 }
 
 type (
+	AnimationNotReadableError struct{ *errctx.TextError }
+)
+
+// newAnimationNotReadableError reports a source whose animation this build of
+// libvips cannot decode, asked for in a format that could have carried it.
+//
+// The message names the format and the frame count for the same reason the
+// frame-cap refusal does: image/info already reports that count for the same
+// object, so nothing is disclosed by repeating it, and "invalid image" would
+// leave the caller with no idea that asking for a still format works fine.
+func newAnimationNotReadableError(format imagetype.Type, frames int) error {
+	msg := fmt.Sprintf(
+		"This build of libvips cannot read %s animation; the source has %d frames. "+
+			"Request a still format instead.",
+		format, frames,
+	)
+
+	return AnimationNotReadableError{errctx.NewTextError(
+		msg,
+		1,
+		errctx.WithStatusCode(http.StatusUnprocessableEntity),
+		errctx.WithPublicMessage(msg),
+		errctx.WithShouldReport(false),
+	)}
+}
+
+type (
 	UnsupportedFormatError struct{ *errctx.TextError }
 )
 

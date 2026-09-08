@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/kane/istore/internal/imagedata"
+	"github.com/kane/istore/internal/imageinfo"
 	"github.com/kane/istore/internal/imagetype"
 	"github.com/kane/istore/internal/options"
 	"github.com/kane/istore/internal/timeout"
@@ -93,6 +94,12 @@ func (p *Processor) ProcessImage(
 	// process a single frame.
 	animated := po.MaxAnimationFrames() > 1 && img.IsAnimated()
 
+	// The format the caller actually named, read before determineOutputFormat
+	// overwrites the same key with what it resolved. Unknown here means the
+	// caller named none — a bare transform, or format,auto — and that difference
+	// is what checkAnimationIsReadable turns on.
+	requestedFormat := po.Format()
+
 	// Determine output format and check if it's supported.
 	// The determined format is stored in po[KeyFormat].
 	outFormat, err := p.determineOutputFormat(img, imgdata, po, animated)
@@ -103,6 +110,13 @@ func (p *Processor) ProcessImage(
 	// Now, as we know the output format, we know for sure if the image
 	// should be processed as animated
 	animated = animated && outFormat.SupportsAnimationSave()
+
+	// An animation libvips cannot see is not the same thing as a still.
+	if !animated {
+		if err := p.checkAnimationIsReadable(img, imgdata, po, requestedFormat); err != nil {
+			return nil, err
+		}
+	}
 
 	// Load required number of frames/pages for processing
 	// and remove animation-related data if not animated.
@@ -162,6 +176,85 @@ func (p *Processor) initialLoadImage(
 	}
 
 	return false, img.Load(imgdata, 1.0, 0, 1)
+}
+
+// checkAnimationIsReadable refuses a source whose container holds an animation
+// this build of libvips cannot see, when the caller explicitly asked for a
+// format that could have carried it.
+//
+// APNG is the case that exists today. iStore's own header walk reads the acTL
+// chunk, so image/info reports the real frame count; libvips has no APNG decoder
+// before 8.19, so it loads the default image and reports one page. The result
+// was a silent flattening of exactly the shape the frame cap's refusal removed:
+// ask for a three-frame APNG as WebP — a format that holds animation perfectly
+// well — and get a well-formed one-frame WebP back, while image/info goes on
+// saying three.
+//
+// The test is a comparison, not a list of formats and not a version check, so it
+// needs no maintenance. On the day libvips reads APNG, Pages() returns three,
+// the two numbers agree, and this stops firing by itself; any future container
+// where iStore's parser sees more frames than libvips does is covered by the
+// same line.
+//
+// Two things deliberately do not reach here:
+//
+//   - format,auto. There the caller delegated the choice of format, so choosing
+//     one that happens to be a still is the server's to make — answering a
+//     browser's Accept negotiation with 422 would be absurd.
+//   - a request with no format at all, and any still format. Flattening is the
+//     honest answer to "give me a JPEG", and it is the only possible answer for
+//     PNG output on a build whose pngsave cannot write APNG either.
+func (p *Processor) checkAnimationIsReadable(
+	img *vips.Image,
+	imgdata imagedata.ImageData,
+	po ProcessingOptions,
+	requestedFormat imagetype.Type,
+) error {
+	// requestedFormat is what the caller named, captured before
+	// determineOutputFormat writes its own answer over the same key. Unknown is
+	// what keeps format,auto and bare transforms out of here; reading po.Format()
+	// at this point would instead see the *resolved* format and refuse both.
+	if requestedFormat == imagetype.Unknown || !requestedFormat.SupportsAnimationSave() {
+		return nil
+	}
+	if po.MaxAnimationFrames() <= 1 {
+		// Configured to flatten everything. Still a valid way to run this, and
+		// refusing would contradict it.
+		return nil
+	}
+	if img.IsAnimated() {
+		return nil // libvips can see the frames; nothing is being lost
+	}
+
+	claimed := containerFrameCount(imgdata)
+	if claimed > img.Pages() {
+		return newAnimationNotReadableError(imgdata.Format(), claimed)
+	}
+
+	return nil
+}
+
+// containerFrameCount asks iStore's own header walk how many frames the file
+// claims, or 0 when it cannot say.
+//
+// The bytes are already in memory, so this is a parse and not a read. A count it
+// reports as a floor rather than the truth — a GIF longer than the header
+// window — is still safe to compare against: a floor can only be lower than the
+// real number, so it cannot manufacture a disagreement that is not there.
+func containerFrameCount(d imagedata.ImageData) int {
+	size, err := d.Size()
+	if err != nil {
+		return 0
+	}
+
+	info, err := imageinfo.Read(d.Reader(), int64(size))
+	if err != nil || info == nil {
+		// A container imageinfo does not parse, or a header it could not finish.
+		// Either way it has no claim to make.
+		return 0
+	}
+
+	return info.FrameCount
 }
 
 // reloadImageForProcessing reloads the image for processing.

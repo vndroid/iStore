@@ -259,6 +259,10 @@ absent ones.
 > along with `UNDEFINED`-typed ones such as `MakerNote`, are skipped rather than
 > emitted as hex blobs.
 
+`info` describes the *source object*, so `FrameCount` is the file's own frame
+count even where the pipeline could not produce that many — see the APNG note
+below, where a transform that would have had to flatten is refused instead.
+
 `info` answers from the first 64 KiB of the file wherever it can — that is the
 point of the endpoint, and it is what makes it far cheaper than fetching the
 image. Three cases cannot be answered that way and fall back to libvips, which
@@ -313,6 +317,34 @@ source, without anything having been dropped. libwebp merges a frame identical
 to its predecessor into it and extends that frame's duration. A 300-frame GIF
 whose palette quantisation made some neighbours identical came out as a
 294-frame WebP here — both 12,000 ms long, and visually the same animation.
+
+#### APNG
+
+An animated PNG is a case of its own, because two parts of iStore disagree about
+it. The header walk behind `image/info` reads the `acTL` chunk, so info reports
+the real frame count. libvips has no APNG decoder before 8.19, so it loads the
+default image and reports one page.
+
+Naming a format that could have carried the animation is therefore refused,
+rather than quietly answered with a still:
+
+```
+GET /a.png?x-oss-process=image/format,webp
+→ 422 This build of libvips cannot read png animation; the source has 3 frames.
+      Request a still format instead.
+```
+
+Everything else about that file is served as before — `format,jpg`,
+`format,png`, `format,avif`, a bare `resize`, and `format,auto` under any
+`Accept`. The distinction is whether the caller *asked* for a format that holds
+animation. `format,auto` delegates the choice, so answering it with a still is
+the server's to make; answering a browser's content negotiation with a 422 would
+not be.
+
+The check is a comparison — what the container claims against what libvips
+loaded — not a list of formats and not a version test. So it needs no
+maintenance: on a libvips that reads APNG the two numbers agree, the refusal
+stops firing by itself, and the ordinary animated path takes over.
 
 **`average-hue`** — terminal, like `info`, and the response is **plain text**,
 not JSON, because that is what OSS returns:
@@ -949,6 +981,17 @@ Every action in OSS's own list is implemented. What is left is not an action.
   single frame, which is self-consistent because that loader also sets no page
   metadata, so `IsAnimated()` stays false and the animated path is never taken.
   Still images and JXL output are unaffected either way.
+- **Animated PNG needs libvips 8.19**, where `pngload` and `pngsave` both gain
+  APNG (unreleased at the time of writing; Alpine 3.23 ships 8.17.3). Until
+  then an APNG is a still to the pipeline, and asking for it as WebP or GIF is
+  refused rather than flattened — see the APNG note under Animation. Nothing
+  needs changing when 8.19 arrives: the refusal is driven by comparing the
+  container's frame count against what libvips loaded, so it retires itself.
+- **TIFF's `unlimited` load flag needs libvips 8.17 built against libtiff
+  4.7+.** iStore asks the loader whether it has the property rather than
+  reading the version, because 8.17 on an older libtiff does not register it.
+  Where it is absent, libvips keeps its own decode limits and TIFFs load
+  normally.
 
 ## Two design notes worth keeping
 
