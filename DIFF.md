@@ -9,9 +9,9 @@ Where a row says "OSS", it is what the OSS documentation states — linked at th
 bottom — not a live comparison against the service.
 
 **Read this first if you are migrating:** the rows most likely to change a
-response your callers already parse are [`info` resolution fields](#info),
-[BMP transparency](#format-conversion), and the
-[resolution limits](#limits-and-defaults), which are 5× lower than OSS's.
+response your callers already parse are [`info` resolution fields](#info) and
+[BMP transparency](#format-conversion). The pixel budget matches OSS; the
+[single-dimension limits](#limits-and-defaults) do not.
 
 ---
 
@@ -93,20 +93,38 @@ None of these can be byte-identical to OSS; they are calibrated, not derived.
 
 ## Limits and defaults
 
-iStore is self-hosted, so these are configuration rather than platform policy —
-but the defaults are **stricter than OSS's** and will refuse sources OSS accepts.
+iStore is self-hosted, so these are configuration rather than platform policy.
+The pixel budget matches OSS deliberately; the rest are iStore's own.
 
 | Limit | OSS | iStore default | Environment variable |
 |---|---|---|---|
-| Total pixels (`width × height × frames`) | 250,000,000 | **50,000,000** | `ISTORE_MAX_SRC_RESOLUTION` |
+| Total pixels (`width × height × frames`) | 250,000,000 | 250,000,000 | `ISTORE_MAX_SRC_RESOLUTION` |
 | Single dimension | 30,000 px | unbounded | `ISTORE_MAX_RESULT_DIMENSION` |
 | Single dimension for `rotate` | 4,096 px | unbounded — a 5000 px source rotates fine | — |
 | Animation frames | pixel budget only | 300 | `ISTORE_MAX_ANIMATION_FRAMES` |
 | Source file size | — | 100 MiB | `ISTORE_MAX_SOURCE_BYTES` |
 | Per-request processing time | — | 20 s | `ISTORE_PROCESS_TIMEOUT_MS` |
 
-The pixel budget is the one that bites: a 9000×7000 JPEG (63 MP) is refused with
-`422 Invalid source image` on the defaults, and would be processed by OSS.
+The pixel budget is set to OSS's 250 MP rather than something smaller, so a
+source OSS would accept is not refused here. What that costs depends on the
+request, not on the source alone — measured on a 17000×14000 JPEG (238 MP) with
+`ISTORE_CONCURRENCY=1`, peak RSS over one request:
+
+| Request | Peak RSS |
+|---|---|
+| `resize,w_200` | 58 MiB — shrink-on-load, the full frame is never materialised |
+| `format,jpg` | 787 MiB |
+| `format,webp` | 1143 MiB |
+
+A thumbnailing workload therefore sits near nothing, while a full-size transcode
+near the ceiling costs about a gigabyte, multiplied by `ISTORE_CONCURRENCY`.
+`ISTORE_MAX_SOURCE_BYTES` (100 MiB) bounds the file but not the pixel count — a
+238 MP JPEG of a flat colour is under 4 MiB — so it is not a substitute for
+sizing the box.
+
+The single-dimension rows are the remaining gap: OSS refuses a source wider or
+taller than 30,000 px, and 4,096 px for `rotate`; iStore enforces neither, so it
+accepts shapes OSS would reject.
 
 ## Build-dependent behaviour
 

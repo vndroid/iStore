@@ -49,19 +49,42 @@ type Config struct {
 //
 // The number is not the real budget. That is CheckDimensions' width x height x
 // frames against MaxSrcResolution — the same product OSS uses, and the reason
-// raising this cap does not open a hole: 300 frames of 500x500 is 75 MP and is
-// refused at 50 MP whatever this says. What this cap governs is the per-frame
-// overhead a pixel count cannot see, which is why a small-but-endless animation
-// still needs a limit of its own. 300 clears essentially every real animation —
-// most are under 100 frames, and a long screen recording runs to a few hundred.
+// raising this cap does not open a hole of its own: at 300 frames the pixel
+// budget refuses anything past roughly 912x912 per frame whatever this says.
+// What this cap governs is the per-frame overhead a pixel count cannot see,
+// which is why a small-but-endless animation still needs a limit. 300 clears
+// essentially every real animation — most are under 100 frames, and a long
+// screen recording runs to a few hundred.
 const DefaultMaxAnimationFrames = 300
+
+// DefaultMaxSrcResolution is the pixel budget: width x height x frames, the same
+// product OSS bounds, at the same number OSS bounds it.
+//
+// Matching OSS is the whole reason for the value, and it is worth being explicit
+// about what it costs, because the answer depends entirely on what the request
+// asks for. Measured on a 17000x14000 JPEG (238 MP) with ISTORE_CONCURRENCY=1,
+// peak RSS over the request:
+//
+//	resize,w_200    58 MiB   shrink-on-load; the full frame never exists
+//	format,jpg     787 MiB   full-size transcode
+//	format,webp   1143 MiB   full-size transcode
+//
+// So a thumbnailing workload sits near nothing and a full-size transcode near
+// the ceiling costs about a gigabyte, multiplied by ISTORE_CONCURRENCY.
+// ISTORE_MAX_SOURCE_BYTES (100 MiB) bounds the file but not the pixel count —
+// a 238 MP JPEG of a flat colour is under 4 MiB — so it is not a substitute for
+// sizing the box.
+//
+// Lower it if the deployment does not need OSS's ceiling; 50_000_000 was the
+// previous default and is a comfortable fit for a small instance.
+const DefaultMaxSrcResolution = 250_000_000
 
 // NewDefaultConfig returns a new Config instance with default values.
 func NewDefaultConfig() Config {
 	return Config{
 		SignatureSize: 32,
 
-		MaxSrcResolution:            50_000_000,
+		MaxSrcResolution:            DefaultMaxSrcResolution,
 		MaxSrcFileSize:              0,
 		MaxAnimationFrames:          DefaultMaxAnimationFrames,
 		MaxAnimationFrameResolution: 0,

@@ -52,15 +52,47 @@ func TestPixelBudgetStillBindsAnimations(t *testing.T) {
 
 	o := options.New()
 
-	// 300 frames of 500x500 is 75 MP against a 50 MP budget.
-	if err := checker.CheckDimensions(o, 500, 500, 300); err == nil {
-		t.Error("300 frames of 500x500 passed the resolution check; the pixel budget is not binding")
+	// 300 frames of 1000x1000 is 300 MP against a 250 MP budget.
+	if err := checker.CheckDimensions(o, 1000, 1000, 300); err == nil {
+		t.Error("300 frames of 1000x1000 passed the resolution check; the pixel budget is not binding")
 	}
 
 	// The same frame count at a size that fits must still be allowed, or the
 	// budget is doing more than it should.
-	if err := checker.CheckDimensions(o, 200, 200, 300); err != nil {
-		t.Errorf("300 frames of 200x200 (12 MP) was refused: %v", err)
+	if err := checker.CheckDimensions(o, 500, 500, 300); err != nil {
+		t.Errorf("300 frames of 500x500 (75 MP) was refused: %v", err)
+	}
+}
+
+// The budget is a deliberate match to OSS's, and the number is the whole point
+// of the match — so it is asserted rather than left to a comment. A still image
+// at the ceiling passes; one pixel past it does not.
+func TestPixelBudgetMatchesOSS(t *testing.T) {
+	c := NewDefaultConfig()
+
+	if c.MaxSrcResolution != DefaultMaxSrcResolution || DefaultMaxSrcResolution != 250_000_000 {
+		t.Errorf("MaxSrcResolution = %d, want 250000000 to match OSS", c.MaxSrcResolution)
+	}
+
+	checker, err := New(&c)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	o := options.New()
+
+	// 20000x12500 is exactly 250 MP.
+	if err := checker.CheckDimensions(o, 20000, 12500, 1); err != nil {
+		t.Errorf("a source at exactly the ceiling was refused: %v", err)
+	}
+	if err := checker.CheckDimensions(o, 20000, 12501, 1); err == nil {
+		t.Error("a source past the ceiling was accepted")
+	}
+
+	// The size that moved: 63 MP was refused under the old 50 MP default and is
+	// well within OSS's, which is the reason for the change.
+	if err := checker.CheckDimensions(o, 9000, 7000, 1); err != nil {
+		t.Errorf("a 63 MP source was refused; OSS accepts it: %v", err)
 	}
 }
 

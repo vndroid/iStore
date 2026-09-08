@@ -15,7 +15,7 @@ signing.
 
 **Migrating from OSS?** `DIFF.md` is the checklist of everywhere the two differ:
 what is missing, what is added, which numbers are approximations rather than
-matches, and which defaults are stricter here than on OSS.
+matches, and where the limits sit.
 
 ## Usage
 
@@ -308,10 +308,11 @@ served normally.
 > The default departs from imgproxy's, which is `1` — "never animate". That is
 > a reasonable default for a proxy pointed at the open internet and the wrong
 > one here. Raising it does not loosen anything: the real budget is
-> `width x height x frames` against `ISTORE_MAX_SRC_RESOLUTION` (50 MP), the
-> same product OSS bounds at 250 MP. 300 frames of 500x500 is 75 MP and is
-> refused whatever the frame cap says. What the cap governs is the per-frame
-> overhead a pixel count cannot see — a small, endless animation.
+> `width x height x frames` against `ISTORE_MAX_SRC_RESOLUTION`, the same
+> product OSS bounds and now the same 250 MP. At 300 frames that refuses
+> anything past roughly 912x912 per frame, whatever the frame cap says. What
+> the cap governs is the per-frame overhead a pixel count cannot see — a
+> small, endless animation.
 
 One surprise worth knowing about: the output can have **fewer** frames than the
 source, without anything having been dropped. libwebp merges a frame identical
