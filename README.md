@@ -189,11 +189,16 @@ without both.
 **`format`** — `jpg` `jpeg` `png` `webp` `gif` `avif` `heic` `jxl` `tiff` `bmp`,
 plus **`auto`**.
 
-`format,auto` is an iStore addition, not an OSS action. It picks the best format
-the client's `Accept` header lists — AVIF, then WebP, then the source's own
-format — and sets `Vary: Accept`. It exists because the alternative is a
-`<picture>` element with an AVIF `<source>` and a fallback, hand-written at every
-call site and stale the moment browser support moves.
+`format,gif` follows OSS's unusual compatibility rule: a GIF source remains
+GIF, while any other source keeps its own format. It does not quantize a JPEG,
+PNG or WebP into GIF.
+
+`format,auto` is an iStore addition, not an OSS action. It picks the acceptable,
+available format with the client's highest `q` value — AVIF wins ties over WebP
+— then falls back to the source's own format, and sets `Vary: Accept`. It exists
+because the alternative is a `<picture>` element with an AVIF `<source>` and a
+fallback, hand-written at every call site and stale the moment browser support
+moves.
 
 Wildcards are ignored on purpose: every browser sends `*/*`, and treating that
 as "AVIF is fine" would send AVIF to clients that cannot read it. JPEG XL is not
@@ -230,10 +235,7 @@ overrides them per request rather than replacing them.
   "Format": {"value": "jpg"},
   "FrameCount": {"value": "1"},
   "ImageHeight": {"value": "267"},
-  "ImageWidth": {"value": "400"},
-  "ResolutionUnit": {"value": "1"},
-  "XResolution": {"value": "1/1"},
-  "YResolution": {"value": "1/1"}
+  "ImageWidth": {"value": "400"}
 }
 ```
 
@@ -241,16 +243,11 @@ When the source carries EXIF, its tags are merged into the same object, as OSS
 does — `Make`, `Model`, `DateTime`, `Orientation`, `LensModel`, the GPS block and
 so on. Tags come from JPEG's `APP1`, PNG's `eXIf` chunk and WebP's `EXIF` chunk
 directly; for AVIF, HEIC, JXL and TIFF they come from libvips, which hands back
-the same bare TIFF block whatever the container wrapped it in. An image with no
-EXIF returns exactly the eight fields above.
-
-That last part used to be untrue in a way worth spelling out, because it did not
-look like a missing feature. `XResolution`, `YResolution` and `ResolutionUnit`
-are in *every* response, and they are read from EXIF. An AVIF whose EXIF says
-72 dpi therefore did not return "eight fields instead of twenty-five" — it
-returned eight fields of which three said `1/1`, `1/1` and `1`, which is the
-answer for an image carrying no resolution metadata at all. Wrong values, not
-absent ones.
+the same bare TIFF block whatever the container wrapped it in. The five fields
+above are unconditional. `ResolutionUnit`, `XResolution` and `YResolution` are
+added only when the source actually carries JFIF, EXIF or PNG `pHYs` resolution
+metadata. Parsing PNG EXIF is an iStore extension; OSS currently documents PNG
+as a supported info container but does not expose its EXIF tags.
 
 > Two deliberate differences, both about *formatting* rather than which tags
 > appear. Values are rendered from the raw EXIF types — `GPSLatitude` is
@@ -874,13 +871,14 @@ Twelve malformed watermark URLs return 400 with the real reason, including a
 base64 object key of `../../etc/passwd`, which is refused as "watermark image not
 found" rather than confirming what does exist.
 
-`info` on a JPEG carrying a full EXIF block returns 34 fields — the 8 basic ones
-plus `Make`, `Model`, `Software`, `DateTime`, `Orientation`, `ExposureTime`,
+`info` on a JPEG carrying a full EXIF block and resolution metadata returns 34
+fields — the 5 basic ones, 3 resolution fields, plus `Make`, `Model`, `Software`,
+`DateTime`, `Orientation`, `ExposureTime`,
 `FNumber`, `ISOSpeedRatings`, `LensModel`, the GPS block and the rest. The same
 EXIF written into a PNG (`eXIf`) and a WebP (`EXIF` chunk) returns the same 34
 fields, so all three container paths agree. `UserComment`, an `UNDEFINED` tag, is
-skipped. An image with no EXIF returns exactly 8 fields, byte-identical to what
-it returned before EXIF merging existed.
+skipped. An image with neither EXIF nor resolution metadata returns exactly 5
+fields.
 
 `circle` and `rounded-corners` on a 300×200 solid blue source, reading the alpha
 channel of the PNG result:

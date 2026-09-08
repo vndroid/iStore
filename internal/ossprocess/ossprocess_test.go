@@ -189,7 +189,7 @@ func TestApplySetsFormat(t *testing.T) {
 		t.Fatal(err)
 	}
 	o := options.New()
-	if err := c.Apply(o, 0, 0); err != nil {
+	if err := c.Apply(o, 0, 0, imagetype.JPEG); err != nil {
 		t.Fatal(err)
 	}
 	got := options.Get(o, keys.Format, imagetype.Unknown)

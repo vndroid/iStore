@@ -135,10 +135,7 @@ func TestJSONShape(t *testing.T) {
 		t.Fatalf("output is not the expected shape: %v\n%s", err, out)
 	}
 
-	want := []string{
-		"FileSize", "Format", "FrameCount", "ImageHeight",
-		"ImageWidth", "ResolutionUnit", "XResolution", "YResolution",
-	}
+	want := []string{"FileSize", "Format", "FrameCount", "ImageHeight", "ImageWidth"}
 	if len(got) != len(want) {
 		t.Errorf("got %d keys, want %d: %s", len(got), len(want), out)
 	}

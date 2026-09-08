@@ -45,6 +45,10 @@ type Info struct {
 	XResolution    string // rational, e.g. "72/1"
 	YResolution    string
 
+	// ResolutionKnown records whether the source actually carried resolution
+	// metadata. OSS omits the three resolution fields when it did not.
+	ResolutionKnown bool
+
 	// Exif holds the source's EXIF tags by their standard names, nil when the
 	// image carries none. OSS merges these into the same flat object as the
 	// fields above, so MarshalJSON does too.
@@ -95,9 +99,11 @@ func (i Info) MarshalJSON() ([]byte, error) {
 	out["FrameCount"] = value{strconv.Itoa(i.FrameCount)}
 	out["ImageHeight"] = value{strconv.Itoa(i.ImageHeight)}
 	out["ImageWidth"] = value{strconv.Itoa(i.ImageWidth)}
-	out["ResolutionUnit"] = value{strconv.Itoa(i.ResolutionUnit)}
-	out["XResolution"] = value{i.XResolution}
-	out["YResolution"] = value{i.YResolution}
+	if i.ResolutionKnown {
+		out["ResolutionUnit"] = value{strconv.Itoa(i.ResolutionUnit)}
+		out["XResolution"] = value{i.XResolution}
+		out["YResolution"] = value{i.YResolution}
+	}
 
 	return marshalOSS(out)
 }
@@ -142,6 +148,9 @@ func Read(r io.Reader, size int64) (*Info, error) {
 		// AVIF, HEIC, JXL, TIFF, BMP, ICO: the container walk for each is a
 		// project of its own, and the caller is better served by an honest
 		// error than by zeros. The HTTP layer falls back to libvips for these.
+		// The fallback must ask libvips for the page count as well as geometry.
+		// TIFF in particular can contain multiple pages.
+		info.FrameCountKnown = false
 		return info, ErrUnsupportedContainer{t}
 	}
 	if err != nil {
@@ -218,6 +227,7 @@ func readJPEG(b []byte, info *Info) error {
 			info.ResolutionUnit = int(seg[7]) + 1
 			info.XResolution = ratio(binary.BigEndian.Uint16(seg[8:]))
 			info.YResolution = ratio(binary.BigEndian.Uint16(seg[10:]))
+			info.ResolutionKnown = true
 
 		case marker == 0xE1 && len(seg) >= 6 && string(seg[:6]) == "Exif\x00\x00":
 			readEXIF(seg[6:], info)
@@ -280,13 +290,16 @@ func readEXIF(b []byte, info *Info) {
 
 	if v, ok := tags["XResolution"]; ok && strings.Contains(v, "/") {
 		info.XResolution = v
+		info.ResolutionKnown = true
 	}
 	if v, ok := tags["YResolution"]; ok && strings.Contains(v, "/") {
 		info.YResolution = v
+		info.ResolutionKnown = true
 	}
 	if v, ok := tags["ResolutionUnit"]; ok {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			info.ResolutionUnit = n
+			info.ResolutionKnown = true
 		}
 	}
 }
@@ -329,6 +342,7 @@ func readPNG(b []byte, info *Info) error {
 				info.ResolutionUnit = 3
 				info.XResolution = strconv.FormatUint(uint64(x), 10) + "/100"
 				info.YResolution = strconv.FormatUint(uint64(y), 10) + "/100"
+				info.ResolutionKnown = true
 			}
 		}
 		next := pos + 12 + l

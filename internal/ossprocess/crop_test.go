@@ -3,6 +3,7 @@ package ossprocess
 import (
 	"testing"
 
+	"github.com/vndroid/istore/internal/imagetype"
 	"github.com/vndroid/istore/internal/options"
 	"github.com/vndroid/istore/internal/options/keys"
 	"github.com/vndroid/istore/internal/processing"
@@ -18,7 +19,7 @@ func applyChain(t *testing.T, raw string) *options.Options {
 		t.Fatalf("Validate(%q): %v", raw, err)
 	}
 	o := options.New()
-	if err := c.Apply(o, srcW, srcH); err != nil {
+	if err := c.Apply(o, srcW, srcH, imagetype.JPEG); err != nil {
 		t.Fatalf("Apply(%q): %v", raw, err)
 	}
 	return o

@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"testing"
 
+	"github.com/vndroid/istore/internal/imagetype"
 	"github.com/vndroid/istore/internal/options"
 	"github.com/vndroid/istore/internal/options/keys"
 	"github.com/vndroid/istore/internal/processing"
@@ -80,7 +81,7 @@ func TestIndexCropOutOfRange(t *testing.T) {
 	if err := c.Validate(); err != nil {
 		t.Fatalf("Validate should pass without the source size: %v", err)
 	}
-	if err := c.Apply(options.New(), srcW, srcH); err == nil {
+	if err := c.Apply(options.New(), srcW, srcH, imagetype.JPEG); err == nil {
 		t.Error("Apply should reject an index past the last slice")
 	}
 }
@@ -339,7 +340,7 @@ func TestFormatAuto(t *testing.T) {
 
 	// auto leaves Format unset; the server fills in the Prefer* keys instead.
 	o := options.New()
-	if err := c.Apply(o, srcW, srcH); err != nil {
+	if err := c.Apply(o, srcW, srcH, imagetype.JPEG); err != nil {
 		t.Fatal(err)
 	}
 	if o.Has(keys.Format) {
@@ -349,6 +350,31 @@ func TestFormatAuto(t *testing.T) {
 	c2, _ := Parse("image/format,avif")
 	if c2.IsAutoFormat() {
 		t.Error("format,avif is not auto")
+	}
+}
+
+func TestFormatGIFPreservesNonGIFSourceFormat(t *testing.T) {
+	c, err := Parse("image/format,gif")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		source imagetype.Type
+		want   imagetype.Type
+	}{
+		{imagetype.GIF, imagetype.GIF},
+		{imagetype.JPEG, imagetype.JPEG},
+		{imagetype.PNG, imagetype.PNG},
+		{imagetype.WEBP, imagetype.WEBP},
+	} {
+		o := options.New()
+		if err := c.Apply(o, srcW, srcH, tt.source); err != nil {
+			t.Fatal(err)
+		}
+		if got := options.Get(o, keys.Format, imagetype.Unknown); got != tt.want {
+			t.Errorf("source %s: format = %s, want %s", tt.source, got, tt.want)
+		}
 	}
 }
 

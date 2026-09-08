@@ -2,12 +2,12 @@ package httpserver
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/vndroid/istore/internal/imagetype"
 	"github.com/vndroid/istore/internal/options"
 	"github.com/vndroid/istore/internal/options/keys"
-	"github.com/vndroid/istore/internal/vips"
 )
 
 // negotiatedFormats are the candidates for `format,auto`, best first.
@@ -27,57 +27,66 @@ var negotiatedFormats = []struct {
 	{"image/webp", imagetype.WEBP, keys.PreferWebP},
 }
 
-// applyAutoFormat sets the pipeline's Prefer* flags from the request's Accept
-// header. Nothing is set when the client listed no modern format, in which case
-// the pipeline keeps the source's own format.
-//
-// Unlike acceptKey this runs per request, after vips.Init, so it can also skip a
-// format this build of libvips cannot save.
-//
-// The result varies by client, so the caller must fold the outcome into the
-// cache key — see acceptKey.
-func applyAutoFormat(o *options.Options, accept string) {
+// applyAutoFormat sets the preference flag for the already-negotiated format.
+func applyAutoFormat(o *options.Options, format imagetype.Type) {
 	for _, f := range negotiatedFormats {
-		if acceptsMIME(accept, f.mime) && vips.SupportsSave(f.typ) {
+		if f.typ == format {
 			o.Set(f.key, true)
 			return
 		}
 	}
 }
 
-// acceptKey collapses an Accept header to the part that changes the output, so
-// two clients with different header orderings but the same capability share a
-// cache entry.
-//
-// This deliberately does NOT consult libvips. vips.SupportsSave calls into the C
-// library, which aborts the process with SIGABRT before vips_init has run — the
-// same trap that split ossprocess.Validate from CheckEncoders. Keeping the key
-// derived from the header alone also keeps it a pure function of the request,
-// which is what a cache key should be.
-//
-// The cost of not checking is a coarser key on a build that cannot save AVIF:
-// AVIF-accepting clients still key as "image/avif" while receiving WebP or the
-// source. Every such client gets the same answer, so the cache stays correct —
-// it just holds one entry that could have been shared with the WebP bucket.
-func acceptKey(accept string) string {
+// negotiateFormat returns the supported modern format with the highest client
+// quality. Ties use the server preference order in negotiatedFormats.
+func negotiateFormat(accept string, supports func(imagetype.Type) bool) imagetype.Type {
+	best := imagetype.Unknown
+	bestQ := 0.0
 	for _, f := range negotiatedFormats {
-		if acceptsMIME(accept, f.mime) {
-			return f.mime
+		q := mimeQuality(accept, f.mime)
+		if q > bestQ && supports(f.typ) {
+			best, bestQ = f.typ, q
 		}
 	}
-	return "source"
+	return best
 }
 
-// acceptsMIME reports whether an Accept header lists the exact type. Wildcards
-// are ignored on purpose: every browser sends `*/*`, and treating that as "AVIF
-// is fine" would send AVIF to clients that cannot read it.
-func acceptsMIME(accept, mime string) bool {
+// mimeQuality returns the highest valid quality for an exact media type.
+// Wildcards are deliberately ignored: */* is not evidence that a client can
+// decode AVIF. A malformed q value makes that media range unacceptable.
+func mimeQuality(accept, mime string) float64 {
+	best := 0.0
 	for _, part := range strings.Split(accept, ",") {
-		if t, _, _ := strings.Cut(strings.TrimSpace(part), ";"); strings.EqualFold(t, mime) {
-			return true
+		pieces := strings.Split(part, ";")
+		if !strings.EqualFold(strings.TrimSpace(pieces[0]), mime) {
+			continue
+		}
+		q := 1.0
+		for _, param := range pieces[1:] {
+			key, val, ok := strings.Cut(strings.TrimSpace(param), "=")
+			if !ok || !strings.EqualFold(key, "q") {
+				continue
+			}
+			parsed, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+			if err != nil || parsed < 0 || parsed > 1 {
+				q = 0
+			} else {
+				q = parsed
+			}
+			break
+		}
+		if q > best {
+			best = q
 		}
 	}
-	return false
+	return best
+}
+
+func acceptKey(format imagetype.Type) string {
+	if format == imagetype.Unknown {
+		return "source"
+	}
+	return format.Mime()
 }
 
 // varyOnAccept marks a response as depending on the Accept header, so shared

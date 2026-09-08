@@ -151,6 +151,24 @@ func TestInfoServesLargeSourceItCanAnswerFromTheHeader(t *testing.T) {
 	}
 }
 
+func TestInfoRejectsNonImageWithoutPanicking(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "not-image.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := newLimitedServer(t, dir, 1024)
+
+	w := httptest.NewRecorder()
+	s.serveInfo(w, httptest.NewRequest(http.MethodGet, "/not-image.txt", nil))
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("status = %d, want %d; body: %s", w.Code, http.StatusUnprocessableEntity, w.Body)
+	}
+	if !strings.Contains(w.Body.String(), "InvalidImage") {
+		t.Errorf("body = %s, want an InvalidImage envelope", w.Body)
+	}
+}
+
 // testJPEG encodes a JPEG and pads it past minSize with trailing bytes. Padding
 // after EOI changes only the file's length, which is the point: the header walk
 // still answers, and the size limit still sees a large file.

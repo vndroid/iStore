@@ -88,7 +88,8 @@ vips_foreign_load_ico_free_buffer(
     VipsObject *self,
     gpointer user_data)
 {
-  VIPS_FREE(user_data);
+  (void) self;
+  g_free(user_data);
 }
 
 /**
@@ -159,6 +160,7 @@ vips_foreign_load_ico_header(VipsForeignLoad *load)
   void *actual_data = data + BMP_FILE_HEADER_LEN;
 
   if (vips_foreign_load_read_full(ico->source, actual_data, data_size) <= 0) {
+    g_free(data);
     vips_error("vips_foreign_load_ico_header", "unable to read ICO image data from the source");
     return -1;
   }
@@ -173,7 +175,7 @@ vips_foreign_load_ico_header(VipsForeignLoad *load)
             &ico->internal[0],
             "access", VIPS_ACCESS_SEQUENTIAL,
             NULL) < 0) {
-      VIPS_FREE(data);
+      g_free(data);
       vips_error("vips_foreign_load_ico_header", "unable to load ICO image as PNG");
       return -1;
     }
@@ -219,7 +221,7 @@ vips_foreign_load_ico_header(VipsForeignLoad *load)
             &ico->internal[0],
             "access", VIPS_ACCESS_SEQUENTIAL,
             NULL) < 0) {
-      VIPS_FREE(data);
+      g_free(data);
       vips_error("vips_foreign_load_ico_header", "unable to load ICO image as BMP");
       return -1;
     }

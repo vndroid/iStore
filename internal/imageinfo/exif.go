@@ -70,10 +70,11 @@ func parseEXIF(b []byte) map[string]string {
 	// Queue of (offset, name table) pairs. IFD0 comes first; sub-IFDs are
 	// appended as their pointer tags are met.
 	type ifd struct {
-		off   int
-		names map[uint16]string
+		off        int
+		names      map[uint16]string
+		followNext bool
 	}
-	queue := []ifd{{int(bo.Uint32(b[4:])), exifTagNames}}
+	queue := []ifd{{int(bo.Uint32(b[4:])), exifTagNames, true}}
 	seen := map[int]bool{}
 
 	for i := 0; i < len(queue) && i < exifIFDLimit; i++ {
@@ -100,7 +101,7 @@ func parseEXIF(b []byte) map[string]string {
 			// It is still reported, because OSS reports it (its example has
 			// "ExifTag": {"value": "2212"}).
 			if sub, ok := exifSubIFDs[tag]; ok && typ == 4 && n == 1 {
-				queue = append(queue, ifd{int(bo.Uint32(b[p+8:])), sub})
+				queue = append(queue, ifd{int(bo.Uint32(b[p+8:])), sub, false})
 			}
 
 			name, ok := cur.names[tag]
@@ -110,6 +111,18 @@ func parseEXIF(b []byte) map[string]string {
 
 			if v, ok := exifValue(b, bo, p, typ, n); ok {
 				out[name] = v
+			}
+		}
+
+		// The four bytes after an IFD's entries point to the next main-chain
+		// IFD. In EXIF this is normally IFD1, which carries the JPEG thumbnail
+		// metadata returned by OSS. Sub-IFDs use explicit pointer tags instead.
+		if cur.followNext {
+			nextAt := base + count*12
+			if nextAt >= base && nextAt+4 <= len(b) {
+				if next := int(bo.Uint32(b[nextAt:])); next > 0 {
+					queue = append(queue, ifd{next, exifTagNames, true})
+				}
 			}
 		}
 	}

@@ -26,6 +26,7 @@ import (
 	"github.com/vndroid/istore/internal/imageinfo"
 	"github.com/vndroid/istore/internal/imagetype"
 	"github.com/vndroid/istore/internal/options"
+	"github.com/vndroid/istore/internal/options/keys"
 	"github.com/vndroid/istore/internal/ossprocess"
 	"github.com/vndroid/istore/internal/processing"
 	"github.com/vndroid/istore/internal/singleflight"
@@ -372,6 +373,10 @@ func (s *Server) serveInfo(w http.ResponseWriter, r *http.Request) {
 	defer f.Close()
 
 	info, err := imageinfo.Read(f, f.Size)
+	if info == nil {
+		s.fail(w, r, http.StatusUnprocessableEntity, "InvalidImage", "the image could not be read")
+		return
+	}
 
 	// imageinfo parses JPEG, PNG, GIF and WebP headers directly, which is the
 	// cheap path and answers most requests outright. Three things send a request
@@ -522,8 +527,10 @@ func (s *Server) serveProcessed(w http.ResponseWriter, r *http.Request, chain *o
 	// format is served to everyone.
 	auto := chain.IsAutoFormat()
 	accept := ""
+	negotiated := imagetype.Unknown
 	if auto {
-		accept = acceptKey(r.Header.Get("Accept"))
+		negotiated = negotiateFormat(r.Header.Get("Accept"), vips.SupportsSave)
+		accept = acceptKey(negotiated)
 		varyOnAccept(w)
 	}
 
@@ -558,7 +565,7 @@ func (s *Server) serveProcessed(w http.ResponseWriter, r *http.Request, chain *o
 	// Collapse duplicate work: a page referencing the same transform twelve
 	// times should cost one encode, not twelve.
 	res, err, shared := s.flight.Do(key.Hash(), func() (any, error) {
-		return s.process(r.Context(), path, chain, srcW, srcH, r.Header.Get("Accept"))
+		return s.process(r.Context(), path, chain, srcW, srcH, negotiated)
 	})
 	if err != nil {
 		s.failProcess(w, r, err)
@@ -634,7 +641,7 @@ func (s *Server) sourceSize(path string) (int, int, error) {
 	return info.ImageWidth, info.ImageHeight, nil
 }
 
-func (s *Server) process(ctx context.Context, path string, chain *ossprocess.Chain, srcW, srcH int, accept string) (*processed, error) {
+func (s *Server) process(ctx context.Context, path string, chain *ossprocess.Chain, srcW, srcH int, negotiated imagetype.Type) (*processed, error) {
 	if s.cfg.ProcessTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, s.cfg.ProcessTimeout)
@@ -648,11 +655,17 @@ func (s *Server) process(ctx context.Context, path string, chain *ossprocess.Cha
 	defer src.Close()
 
 	o := options.New()
-	if err := chain.Apply(o, srcW, srcH); err != nil {
+	if err := chain.Apply(o, srcW, srcH, src.Format()); err != nil {
 		return nil, err
 	}
 	if chain.IsAutoFormat() {
-		applyAutoFormat(o, accept)
+		if negotiated == imagetype.Unknown {
+			// With no acceptable modern format, format,auto means preserve the
+			// source format rather than fall through to process-wide preferences.
+			o.Set(keys.Format, src.Format())
+		} else {
+			applyAutoFormat(o, negotiated)
+		}
 	}
 
 	s.acquire()

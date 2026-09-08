@@ -332,7 +332,10 @@ func (c *Chain) CheckEncoders() error {
 		if t == imagetype.Unknown {
 			continue // format,auto: the server picks a format libvips can save
 		}
-		if !vips.SupportsSave(t) {
+		// OSS treats format,gif as "preserve GIF if the source is GIF,
+		// otherwise preserve the source format". Its actual encoder therefore
+		// depends on the source and is checked by the processing pipeline.
+		if t != imagetype.GIF && !vips.SupportsSave(t) {
 			return fmt.Errorf("format %q cannot be produced by this build of libvips", strings.ToLower(a.Params[0].Value))
 		}
 	}
@@ -357,7 +360,7 @@ func (c *Chain) NeedsSourceSize() bool {
 // srcW and srcH are the source dimensions; they may be zero when
 // NeedsSourceSize reports false. Only transform chains reach here; call IsInfo
 // first.
-func (c *Chain) Apply(o *options.Options, srcW, srcH int) error {
+func (c *Chain) Apply(o *options.Options, srcW, srcH int, srcFormat imagetype.Type) error {
 	for _, a := range c.Actions {
 		switch a.Name {
 		case "format":
@@ -367,6 +370,11 @@ func (c *Chain) Apply(o *options.Options, srcW, srcH int) error {
 			}
 			// format,auto leaves Format unset; the server sets the Prefer* keys
 			// from the Accept header instead, and the pipeline picks from those.
+			if t == imagetype.GIF && srcFormat != imagetype.Unknown && srcFormat != imagetype.GIF {
+				// OSS does not convert a non-GIF source to GIF; it keeps the source
+				// format while applying the rest of the chain.
+				t = srcFormat
+			}
 			if t != imagetype.Unknown {
 				o.Set(keys.Format, t)
 			}

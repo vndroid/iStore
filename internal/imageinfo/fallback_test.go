@@ -82,6 +82,9 @@ func TestReadReturnsPartialInfoOnUnsupportedContainer(t *testing.T) {
 	if info.ImageWidth != 0 {
 		t.Errorf("ImageWidth = %d, want 0", info.ImageWidth)
 	}
+	if info.FrameCountKnown {
+		t.Error("FrameCountKnown = true; fallback containers such as TIFF may have multiple pages")
+	}
 }
 
 // A JPEG whose SOF is comfortably inside the window still parses normally; the
@@ -136,8 +139,7 @@ func exifBlock(t *testing.T) []byte {
 // ApplyEXIF is the entry point the HTTP layer uses for the containers this
 // package cannot walk: libvips hands back the same bare TIFF block, and it has
 // to produce the same fields the JPEG path does. In particular the three
-// resolution fields, which are in every response — before this they were left at
-// their defaults for AVIF, so the answer was not merely thin but wrong.
+// resolution fields, which must reflect the source when they are present.
 func TestApplyEXIF(t *testing.T) {
 	info := &Info{ResolutionUnit: 1, XResolution: "1/1", YResolution: "1/1"}
 

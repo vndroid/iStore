@@ -190,6 +190,29 @@ func TestParseEXIFSubIFD(t *testing.T) {
 	}
 }
 
+func TestParseEXIFFollowsIFD1(t *testing.T) {
+	ifd0 := []exifEntry{{0x0112, 3, 1, le16(1)}}
+	ifd1 := []exifEntry{
+		{0x0201, 4, 1, le32(1234)},
+		{0x0202, 4, 1, le32(5678)},
+	}
+	b := buildEXIF(t, ifd0, ifd1)
+
+	// IFD1 is laid out immediately after IFD0. Patch IFD0's next-IFD pointer,
+	// which buildEXIF otherwise leaves at zero.
+	nextAt := 8 + 2 + len(ifd0)*12
+	ifd1At := nextAt + 4
+	binary.LittleEndian.PutUint32(b[nextAt:], uint32(ifd1At))
+
+	got := parseEXIF(b)
+	if got["JPEGInterchangeFormat"] != "1234" {
+		t.Errorf("JPEGInterchangeFormat = %q, want 1234", got["JPEGInterchangeFormat"])
+	}
+	if got["JPEGInterchangeFormatLength"] != "5678" {
+		t.Errorf("JPEGInterchangeFormatLength = %q, want 5678", got["JPEGInterchangeFormatLength"])
+	}
+}
+
 func TestParseEXIFRejectsGarbage(t *testing.T) {
 	// None of these may panic or return tags.
 	for name, b := range map[string][]byte{
@@ -223,9 +246,9 @@ func TestParseEXIFTruncatedEntry(t *testing.T) {
 	}
 }
 
-func TestInfoMarshalWithoutEXIFIsUnchanged(t *testing.T) {
-	// The eight basic fields must marshal exactly as they did before EXIF
-	// merging existed, or every cached info response changes shape.
+func TestInfoMarshalOmitsUnknownResolution(t *testing.T) {
+	// OSS always returns five basic fields. Resolution is conditional metadata,
+	// even though its example image happens to carry 1/1 values.
 	i := Info{
 		FileSize: 638, Format: 0, FrameCount: 1,
 		ImageWidth: 300, ImageHeight: 200,
@@ -237,14 +260,14 @@ func TestInfoMarshalWithoutEXIFIsUnchanged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Keys must be alphabetical, which is what OSS emits and what a map
-	// marshals to.
-	for _, want := range []string{
-		`"FileSize"`, `"FrameCount"`, `"ImageHeight"`, `"ImageWidth"`,
-		`"ResolutionUnit"`, `"XResolution"`, `"YResolution"`,
-	} {
+	for _, want := range []string{`"FileSize"`, `"FrameCount"`, `"ImageHeight"`, `"ImageWidth"`} {
 		if !contains(string(b), want) {
 			t.Errorf("missing %s in %s", want, b)
+		}
+	}
+	for _, unwanted := range []string{`"ResolutionUnit"`, `"XResolution"`, `"YResolution"`} {
+		if contains(string(b), unwanted) {
+			t.Errorf("unexpected %s in %s", unwanted, b)
 		}
 	}
 }
