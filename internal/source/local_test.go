@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -51,7 +52,7 @@ func TestOpenAllowsPathsInsideRoot(t *testing.T) {
 	}
 
 	for _, p := range []string{"/ok.txt", "ok.txt", "/sub/nested.txt", "/sub/../ok.txt"} {
-		f, err := l.Open(p)
+		f, err := l.Open(context.Background(), p)
 		if err != nil {
 			t.Errorf("Open(%q): %v", p, err)
 			continue
@@ -75,7 +76,7 @@ func TestOpenRejectsEscapes(t *testing.T) {
 		"/sub/./../../outside/secret.txt",
 	}
 	for _, p := range cases {
-		f, err := l.Open(p)
+		f, err := l.Open(context.Background(), p)
 		if err == nil {
 			f.Close()
 			t.Errorf("Open(%q): expected refusal, got success", p)
@@ -100,7 +101,7 @@ func TestOpenRejectsSymlinkOutOfRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f, err := l.Open("/escape")
+	f, err := l.Open(context.Background(), "/escape")
 	if err == nil {
 		f.Close()
 		t.Fatal("Open(/escape): a symlink out of the root was served")
@@ -116,7 +117,7 @@ func TestOpenRejectsDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := l.Open("/sub")
+	f, err := l.Open(context.Background(), "/sub")
 	if err == nil {
 		f.Close()
 		t.Fatal("Open(/sub): a directory was opened as a file")
@@ -132,7 +133,7 @@ func TestOpenMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.Open("/nope.txt"); !errors.Is(err, ErrNotFound) {
+	if _, err := l.Open(context.Background(), "/nope.txt"); !errors.Is(err, ErrNotFound) {
 		t.Errorf("got %v, want ErrNotFound", err)
 	}
 }

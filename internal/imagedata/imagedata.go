@@ -2,8 +2,9 @@
 //
 // This is a much-reduced stand-in for imgproxy's package of the same name.
 // imgproxy's version also covers HTTP downloading, response limits, streaming
-// providers and cloud-storage transports; iStore reads from the local disk and
-// from libvips memory targets only, so all of that is gone.
+// providers and cloud-storage transports; here the bytes arrive already fetched
+// — internal/source does the reading, from local disk or from one configured
+// origin — so all of that is gone from this package.
 //
 // What is kept, deliberately, is the reference counting and the cancel-hook:
 // vips.Image.Save() hands back a buffer that lives inside a VipsTarget, and the

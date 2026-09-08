@@ -9,7 +9,8 @@ for why those two go together.
 Status: **working.** `resize`, `crop`, `indexcrop`, `trim`, `rotate`,
 `auto-orient`, `blur`, `sharpen`, `pixelate`, `bright`, `contrast`, `circle`,
 `rounded-corners`, `watermark`, `quality`, `format`, `interlace`, `info` and
-`average-hue` are served over HTTP from a local directory, with a bounded disk cache, request coalescing,
+`average-hue` are served over HTTP from a local directory or an upstream origin,
+with a bounded disk cache, request coalescing,
 a concurrency limit, `Accept`-based format negotiation and optional HMAC request
 signing.
 
@@ -34,6 +35,77 @@ GET /photo.jpg?x-oss-process=image/resize,m_fill,w_200,h_200/quality,q_80/format
 GET /photo.jpg?x-oss-process=image/info           JSON metadata
 GET /healthz
 ```
+
+### Upstream mode
+
+Instead of a directory, iStore can read from another HTTP server. Set
+`ISTORE_UPSTREAM` instead of `ISTORE_ROOT` — they are mutually exclusive, and
+setting both is a startup error rather than a silent preference:
+
+```sh
+ISTORE_UPSTREAM=http://localhost:3030 \
+ISTORE_CACHE_DIR=/var/cache/istore \
+  istore
+```
+
+The request path is appended to that base and nothing else changes, so every URL
+above works unaltered:
+
+```
+GET http://istore:8080/photo.jpg?x-oss-process=image/info
+  -> GET http://localhost:3030/photo.jpg
+  -> the same info response the local mode would give
+```
+
+A base may carry a path prefix (`http://origin:3030/images`), and the request
+path is normalised before it is joined, so `..` cannot climb out of that prefix.
+It may not carry a query string or a fragment.
+
+Four things are worth knowing before switching a deployment over.
+
+**The origin is fixed, and redirects are not followed.** The host comes from
+configuration and never from the request, so the SSRF surface that makes a
+general image proxy dangerous is not open here — and following a 3xx would hand
+that choice back to the origin, so a redirect is reported as `502` rather than
+obeyed.
+
+**`info` still costs a header, not a file.** iStore asks for
+`Range: bytes=0-65535`. An origin that honours it answers `206` and the endpoint
+costs one small response however large the image is — measured at one origin
+request and no measurable memory for a 40 MB JPEG, the same as reading it off
+disk. Only the cases that need the whole object — a container with no header
+walk (AVIF, HEIC, JXL, TIFF, BMP), or a JPEG whose SOF sits past 64 KiB — make a
+second, full request, and those are bounded separately by
+`ISTORE_UPSTREAM_INFO_MAX_BYTES` (10 MiB), well below `ISTORE_MAX_SOURCE_BYTES`.
+An origin that ignores `Range` and answers `200` is not a problem either: the
+body is capped at 64 KiB and closed, so the transfer is aborted, not downloaded.
+
+**Cache entries key on the origin's validator.** `ETag`, else `Last-Modified`,
+takes the place of the size and mtime a local stat provides. An origin that
+sends neither leaves nothing to key on, so the key carries a time bucket instead
+— that is `ISTORE_UPSTREAM_TTL_SEC`, and it is why a replaced object turns over
+within five minutes by default rather than never. Give the origin an `ETag` and
+the TTL stops mattering. The same TTL bounds the in-memory watermark map, which
+has no validator of its own.
+
+**Signing matters more here.** Unsigned local mode exposes a directory. Unsigned
+upstream mode lets anyone who can reach the port drive arbitrary transform
+chains against the origin, which spends the origin's bandwidth and this box's
+CPU at the same time. See [Request signing](#request-signing).
+
+Round trips per request, so the cost is not a surprise:
+
+| request | origin requests |
+|---|---|
+| `info`, header answers | 1 (ranged) |
+| `info`, needs the whole object | 2 |
+| transform, cache hit | 1 (`HEAD`) |
+| transform, cache miss | 2 (`HEAD` + `GET`) |
+| 12 concurrent identical transforms, cold | 12 `HEAD` + 1 `GET` — the encode is coalesced |
+| the source untouched | 1 |
+
+`HEAD` is used for the identity check; an origin that answers `405` or `501` to
+it gets a one-byte ranged `GET` instead.
 
 ### Supported actions
 
@@ -377,7 +449,11 @@ unchanged:
 
 | variable | default | meaning |
 |---|---|---|
-| `ISTORE_ROOT` | *(required)* | directory images are served from |
+| `ISTORE_ROOT` | *(one of these two is required)* | directory images are served from |
+| `ISTORE_UPSTREAM` | *(one of these two is required)* | base URL images are fetched from, e.g. `http://localhost:3030` |
+| `ISTORE_UPSTREAM_TIMEOUT_MS` | `10000` | bounds one fetch, separately from the processing deadline |
+| `ISTORE_UPSTREAM_TTL_SEC` | `300` | how long upstream content is reused when the origin sends no `ETag` or `Last-Modified`; also bounds the watermark map |
+| `ISTORE_UPSTREAM_INFO_MAX_BYTES` | `10485760` | bounds `info`'s whole-object fallback; the ranged path is unaffected |
 | `ISTORE_CACHE_DIR` | *(unset — no cache)* | where transcoded results are stored |
 | `ISTORE_BIND` | `:8080` | listen address |
 | `ISTORE_CONCURRENCY` | `GOMAXPROCS` | simultaneous encodes |
@@ -395,6 +471,9 @@ unchanged:
 | `ISTORE_TRUSTED_SIGNATURES` | *(unset)* | signature strings accepted verbatim |
 | `ISTORE_LOG_LEVEL` | `info` | debug / info / warn / error |
 
+`ISTORE_ROOT` and `ISTORE_UPSTREAM` are mutually exclusive: setting both, or
+neither, fails at startup rather than picking one.
+
 Every `ISTORE_*` variable imgproxy documents as `IMGPROXY_*` for the processing
 and security layers also applies; the prefix is the only change.
 
@@ -404,6 +483,10 @@ Off by default. Set **both** `ISTORE_KEY` and `ISTORE_SALT` (hex-encoded) and
 every request except `/healthz` must carry a valid `x-istore-signature`, or it
 gets `403` with `{"Code":"AccessDenied","Message":"Forbidden"}`. With either one
 unset, nothing is checked and the server says so once at startup.
+
+Off by default is defensible in local mode and much less so in
+[upstream mode](#upstream-mode), where an unsigned instance is a way for anyone
+who can reach the port to drive the origin.
 
 ```sh
 ISTORE_KEY=$(openssl rand -hex 32) ISTORE_SALT=$(openssl rand -hex 32) istore
@@ -711,6 +794,31 @@ cache                       MISS 223ms -> HIT 1.4ms
 singleflight                12 concurrent identical requests -> 1 MISS + 11 COALESCED,
                             1 cache entry (not 12 encodes)
 HEAD                        200, no body;  POST -> 405
+```
+
+Upstream mode, against a static origin serving the same fixtures — the
+comparison that matters is against local mode, since the point is that nothing
+above the source changes:
+
+```
+info parity                 9 fixtures (jpg png webp gif avif tiff bmp, EXIF
+                            IFD1, 200-frame GIF) — responses byte-identical to
+                            local mode
+transform parity            resize / crop / rotate / blur / circle / quality /
+                            format,png / format,webp — output byte-identical
+average-hue, watermark      identical; the untouched source is the origin's
+                            bytes unchanged
+info cost, 5 KB jpg         1 origin request (ranged)
+info cost, 40 MB jpg        1 origin request (ranged), RSS flat over 30 repeats
+info cost, SOF past 64 KiB  2 origin requests — the documented fallback
+cache                       MISS then HIT; the HIT costs one HEAD, no GET
+singleflight                12 concurrent identical -> 12 HEAD + 1 GET
+peak RSS, 40 MB source      163 MB upstream vs 154 MB local, 3 transcodes
+TTL fallback (no ETag)      MISS, HIT, then MISS again past the TTL
+origin down / slow / 3xx    502 / 504 / 502, and the body never names the origin
+origin 403,429,500,503      passed through with the origin's own status
+signing                     unsigned 403, signed 200, /healthz still exempt
+both ROOT and UPSTREAM      refused at startup; neither, also refused
 ```
 
 Resize, against a 400×300 source, checking the decoded output not just the status:

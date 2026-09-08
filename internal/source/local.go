@@ -1,35 +1,27 @@
-// Package source resolves a request path to a file on local disk.
+package source
+
+import (
+	"context"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+)
+
+// Local serves objects from a single directory tree.
 //
 // The only job here that matters is refusing to serve anything outside the
 // configured root. Two ways out of a root exist and both are closed below:
 // `..` segments in the request path, and symlinks inside the root pointing
 // outside it. Cleaning the path handles the first; evaluating symlinks and
 // re-checking handles the second.
-package source
-
-import (
-	"errors"
-	"fmt"
-	"io"
-	"net/url"
-	"os"
-	"path/filepath"
-	"strings"
-)
-
-var (
-	// ErrNotFound means no such file under the root.
-	ErrNotFound = errors.New("source: not found")
-	// ErrOutsideRoot means the resolved path escaped the root.
-	ErrOutsideRoot = errors.New("source: path escapes the root directory")
-	// ErrNotRegular means the path exists but is a directory, device, socket...
-	ErrNotRegular = errors.New("source: not a regular file")
-)
-
-// Local serves files from a single directory tree.
 type Local struct {
 	root string // absolute, symlinks already evaluated
 }
+
+var _ Source = (*Local)(nil)
 
 // NewLocal opens root, which must be an existing directory.
 func NewLocal(root string) (*Local, error) {
@@ -56,22 +48,42 @@ func NewLocal(root string) (*Local, error) {
 // Root is the resolved root directory.
 func (l *Local) Root() string { return l.root }
 
-// File is an opened source file plus the identity used for cache keys.
-type File struct {
-	Path    string // absolute path on disk
-	Size    int64
-	ModTime int64 // unix nanoseconds
-	f       *os.File
+// Describe implements Source.
+func (l *Local) Describe() string { return l.root }
+
+// Stat resolves and stats without opening.
+func (l *Local) Stat(_ context.Context, urlPath string) (*Info, error) {
+	name, err := l.resolve(urlPath)
+	if err != nil {
+		return nil, err
+	}
+	st, err := os.Stat(name)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, ErrNotRegular
+	}
+	return &Info{
+		Key:     name,
+		Size:    st.Size(),
+		Version: strconv.FormatInt(st.ModTime().UnixNano(), 10),
+	}, nil
 }
 
-func (f *File) Read(p []byte) (int, error)                { return f.f.Read(p) }
-func (f *File) Seek(off int64, whence int) (int64, error) { return f.f.Seek(off, whence) }
-func (f *File) Close() error                              { return f.f.Close() }
-func (f *File) WriteTo(w io.Writer) (int64, error)        { return io.Copy(w, f.f) }
+// OpenHeader is Open. A local read is already a seek and a 64 KiB copy, so
+// there is nothing for a prefix to save — the distinction only pays against a
+// network origin.
+func (l *Local) OpenHeader(ctx context.Context, urlPath string, _ int) (*Object, error) {
+	return l.Open(ctx, urlPath)
+}
 
-// Open resolves urlPath (the request's URL path, still percent-encoded is fine —
-// net/http has already decoded it into r.URL.Path) and opens the file.
-func (l *Local) Open(urlPath string) (*File, error) {
+// Open resolves urlPath (the request's URL path, already decoded by net/http)
+// and opens the file.
+func (l *Local) Open(_ context.Context, urlPath string) (*Object, error) {
 	name, err := l.resolve(urlPath)
 	if err != nil {
 		return nil, err
@@ -95,28 +107,11 @@ func (l *Local) Open(urlPath string) (*File, error) {
 		return nil, ErrNotRegular
 	}
 
-	return &File{
-		Path:    name,
+	return newObject(Info{
+		Key:     name,
 		Size:    st.Size(),
-		ModTime: st.ModTime().UnixNano(),
-		f:       f,
-	}, nil
-}
-
-// Stat resolves and stats without opening.
-func (l *Local) Stat(urlPath string) (string, os.FileInfo, error) {
-	name, err := l.resolve(urlPath)
-	if err != nil {
-		return "", nil, err
-	}
-	st, err := os.Stat(name)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil, ErrNotFound
-		}
-		return "", nil, err
-	}
-	return name, st, nil
+		Version: strconv.FormatInt(st.ModTime().UnixNano(), 10),
+	}, f, f), nil
 }
 
 // resolve maps a URL path to an absolute path guaranteed to sit under the root.

@@ -36,6 +36,7 @@ Every action in OSS's own list is implemented: `resize`, `crop`, `indexcrop`,
 | `format,f_png` | The `key_value` spelling is accepted alongside OSS's bare `format,png`. |
 | `x-istore-signature` | Optional HMAC request signing, off unless `ISTORE_KEY` and `ISTORE_SALT` are both set. See README. |
 | `GET /healthz` | Liveness probe; exempt from signing. |
+| `ISTORE_UPSTREAM` | Sources can come from another HTTP origin instead of a directory. See [Upstream mode](#upstream-mode). |
 
 ## Format conversion
 
@@ -144,13 +145,38 @@ level=INFO msg="encodable formats" formats="[jpg png webp gif avif jxl tiff bmp 
 | Animated JPEG XL | Needs libvips 8.16 to read; older builds see a still |
 | APNG | No released libvips reads APNG frames. It is on master under an unreleased `8.19.0` heading, in the libpng path only and behind `PNG_APNG_SUPPORTED`, so a future release is necessary but not sufficient. See Animation above. |
 
+## Upstream mode
+
+Everything above describes iStore serving a local directory, which is what all
+of it was measured against. `ISTORE_UPSTREAM` fetches sources from another HTTP
+origin instead. The OSS grammar, the pipeline and every response shape are
+unchanged; what follows is the short list of behaviour that is not, and it is
+about iStore against itself, not about OSS.
+
+| Case | Local mode | Upstream mode |
+|---|---|---|
+| A path that is a directory | `404 NoSuchKey` | Whatever the origin returns. A directory-listing origin answers `200` with its HTML, and the untouched-source endpoint passes it through, because that endpoint is a pass-through by definition. Any `x-oss-process` chain on the same path still gets `422 InvalidImage`. |
+| Cache invalidation | Size and mtime are in the key, so an edited file misses immediately | The origin's `ETag`, else `Last-Modified`, is in the key. With neither, the key carries a `ISTORE_UPSTREAM_TTL_SEC` time bucket (300 s), so a replaced object is picked up within one TTL rather than immediately |
+| `info` on a source needing a whole-object read | Bounded by `ISTORE_MAX_SOURCE_BYTES` (100 MiB) | Bounded by `ISTORE_UPSTREAM_INFO_MAX_BYTES` (10 MiB) as well. The ranged path — every JPEG, PNG, GIF and WebP whose header answers — is unaffected and costs one 64 KiB response at any file size |
+| `info` on an origin that ignores `Range` | — | Still one request, still 64 KiB: the `200` body is capped and closed rather than downloaded |
+| Origin returns 4xx or 5xx | — | Passed through with the origin's own status and `{"Code":"UpstreamError"}`. `404` and `410` become the usual `404 NoSuchKey` |
+| Origin returns 3xx | — | `502`. Redirects are not followed — doing so would hand the choice of destination back to the origin, and passing the 3xx to the client would send it to fetch the unprocessed original |
+| Origin unreachable / times out | — | `502` / `504`. The fetch has its own budget, `ISTORE_UPSTREAM_TIMEOUT_MS` (10 s), separate from `ISTORE_PROCESS_TIMEOUT_MS` |
+| Client `Range` requests | Not supported | Not supported. iStore's own request to the origin is ranged; a client asking iStore for a range still gets the whole object |
+| Watermark objects | Read from the root, cached in memory for the process's life | Fetched from the origin, cached for `ISTORE_UPSTREAM_TTL_SEC` |
+
+The error bodies never name the origin or repeat what it said. Which internal
+host iStore talks to is not the client's business; the operator gets the URL and
+the origin's status in the log.
+
 ## Errors
 
 The envelope matches OSS's shape — `{"Code": "...", "Message": "..."}` with the
 same JSON layout — so a client written against OSS parses iStore's failures. The
 `Code` strings themselves have **not** been cross-checked against OSS's list;
 iStore emits `NoSuchKey`, `InvalidArgument`, `InvalidImage`, `SourceTooLarge`,
-`AccessDenied`, `MethodNotAllowed`, `RequestTimeout` and `InternalError`.
+`AccessDenied`, `MethodNotAllowed`, `RequestTimeout`, `InternalError` and — in
+upstream mode only — `UpstreamError`.
 
 A path that escapes the root, names a directory, or does not exist all return the
 same `404 NoSuchKey`, deliberately: distinguishing them maps the filesystem for

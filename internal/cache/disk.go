@@ -5,9 +5,11 @@
 // cached — which is why this package is not optional, and why the HTTP layer
 // wires it in before it wires in anything else.
 //
-// The key covers the source's identity (path, size, mtime) and the exact process
-// chain, so editing a source file or changing the chain misses naturally without
-// any invalidation step.
+// The key covers the source's identity and the exact process chain, so editing a
+// source file or changing the chain misses naturally without any invalidation
+// step. What "identity" means depends on where the source came from — path, size
+// and mtime on local disk; the origin's validator, or a time bucket, upstream —
+// see Key.
 //
 // Writes go to a temporary file in the same directory and are renamed into
 // place, so a reader never sees a half-written entry and two concurrent writers
@@ -42,11 +44,25 @@ func NewDisk(root string) (*Disk, error) {
 }
 
 // Key identifies one cache entry.
+//
+// SourceSize and SourceMod come from a stat, which only a local source has. An
+// upstream source leaves them zero and fills SourceVersion instead, from the
+// origin's ETag or Last-Modified — or, when the origin offers neither, from a
+// coarse time bucket, which is how a TTL is expressed here. Putting the TTL in
+// the key rather than in the entry means expiry needs no machinery: the key
+// simply changes, the old entry stops being asked for, and the evictor collects
+// it like any other cold entry.
 type Key struct {
 	SourcePath string
 	SourceSize int64
 	SourceMod  int64
-	Chain      string // the raw x-oss-process value
+
+	// SourceVersion is an opaque validator that changes when the source's bytes
+	// change. Empty for a local source, whose identity size and mtime already
+	// cover.
+	SourceVersion string
+
+	Chain string // the raw x-oss-process value
 }
 
 // Hash renders the key as a hex digest. It is exported because the HTTP layer
@@ -65,6 +81,12 @@ func (k Key) Hash() string {
 	write(k.SourcePath)
 	write(strconv.FormatInt(k.SourceSize, 10))
 	write(strconv.FormatInt(k.SourceMod, 10))
+	// Only mixed in when there is one, so a local deployment's keys — and
+	// therefore its warm cache — survive the arrival of upstream mode. The
+	// length prefix already stops an empty version from colliding with anything.
+	if k.SourceVersion != "" {
+		write(k.SourceVersion)
+	}
 	write(k.Chain)
 	return hex.EncodeToString(h.Sum(nil))
 }

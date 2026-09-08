@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/vndroid/istore/internal/imagedata"
 	"github.com/vndroid/istore/internal/imagetype"
@@ -23,28 +25,51 @@ import (
 // of text, or both side by side — so this one reads what the parser left in the
 // options bag and builds the image.
 //
-// An object key is loaded from the same root the request itself is served from,
-// which means the path resolver, and therefore the traversal and symlink checks,
-// apply to watermarks too.
+// An object key is fetched from the same source the request itself is served
+// from: on local disk that means the path resolver, and therefore the traversal
+// and symlink checks, apply to watermarks too; against an origin it means the
+// watermark comes from the origin, through the same bounded fetch.
 type watermarkProvider struct {
-	src *source.Local
+	src      source.Source
+	maxBytes int64
 
 	// Image watermarks repeat across requests far more than sources do — a site
 	// usually has one — so they are held in memory after the first read. The map
-	// is keyed by the object path and never evicted, which is safe precisely
-	// because that key is a path: the number of distinct entries is bounded by
-	// the number of files under the root, the same bound the disk cache already
-	// lives with.
+	// is keyed by the object path and cannot grow without bound, which is safe
+	// precisely because that key is a path: the number of distinct entries is
+	// bounded by the number of objects the source has, the same bound the disk
+	// cache already lives with.
 	//
 	// Nothing built from `text_` goes in here. See cacheable.
+	//
+	// ttl is zero for a local source, whose entries never expire: a watermark
+	// read off disk is as current as the disk. For an upstream source it is not
+	// zero, and there is nothing here to revalidate against — the map holds a
+	// decoded image, not an HTTP response — so entries carry a deadline and are
+	// rebuilt past it. Without that, replacing the watermark at the origin would
+	// not take effect until iStore restarted.
+	ttl time.Duration
+
 	mu     sync.RWMutex
-	loaded map[string]imagedata.ImageData
+	loaded map[string]*cachedWatermark
 }
 
-func newWatermarkProvider(src *source.Local) *watermarkProvider {
+// cachedWatermark is one memoised watermark image. A zero expiry never expires.
+type cachedWatermark struct {
+	data    imagedata.ImageData
+	expires time.Time
+}
+
+func (c *cachedWatermark) stale(now time.Time) bool {
+	return !c.expires.IsZero() && now.After(c.expires)
+}
+
+func newWatermarkProvider(src source.Source, maxBytes int64, ttl time.Duration) *watermarkProvider {
 	return &watermarkProvider{
-		src:    src,
-		loaded: make(map[string]imagedata.ImageData),
+		src:      src,
+		maxBytes: maxBytes,
+		ttl:      ttl,
+		loaded:   make(map[string]*cachedWatermark),
 	}
 }
 
@@ -101,7 +126,7 @@ func (s watermarkSpec) cacheable() bool { return s.text == "" }
 func (s watermarkSpec) cacheKey() string { return s.path }
 
 // Get implements auximageprovider.Provider.
-func (p *watermarkProvider) Get(_ context.Context, o *options.Options) (imagedata.ImageData, http.Header, error) {
+func (p *watermarkProvider) Get(ctx context.Context, o *options.Options) (imagedata.ImageData, http.Header, error) {
 	spec := readWatermarkSpec(o)
 	if spec.path == "" && spec.text == "" {
 		// No watermark requested. The pipeline treats a nil image as "skip".
@@ -111,7 +136,7 @@ func (p *watermarkProvider) Get(_ context.Context, o *options.Options) (imagedat
 	if !spec.cacheable() {
 		// Built fresh and handed straight to the caller, who closes it. Nothing
 		// is retained, so nothing accumulates.
-		d, err := p.build(spec)
+		d, err := p.build(ctx, spec)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -119,29 +144,41 @@ func (p *watermarkProvider) Get(_ context.Context, o *options.Options) (imagedat
 	}
 
 	key := spec.cacheKey()
+	now := time.Now()
 
 	p.mu.RLock()
-	d, ok := p.loaded[key]
+	c, ok := p.loaded[key]
 	p.mu.RUnlock()
-	if ok {
+	if ok && !c.stale(now) {
 		// Ref so the caller's Close does not release the cached copy.
-		return d.Ref(), make(http.Header), nil
+		return c.data.Ref(), make(http.Header), nil
 	}
 
-	d, err := p.build(spec)
+	d, err := p.build(ctx, spec)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	entry := &cachedWatermark{data: d}
+	if p.ttl > 0 {
+		entry.expires = now.Add(p.ttl)
+	}
+
 	p.mu.Lock()
-	// Another request may have built it while this one was working; keep
-	// whichever landed first so there is exactly one cached instance.
-	if existing, ok := p.loaded[key]; ok {
+	// Another request may have built it while this one was working. Keep
+	// whichever landed first, so there is exactly one cached instance — unless
+	// what is there has expired, in which case this fresher one replaces it and
+	// the map's reference to the old one is released. Any request still holding
+	// the old image keeps its own reference, so it stays alive until that
+	// request is done with it.
+	if existing, ok := p.loaded[key]; ok && !existing.stale(now) {
 		p.mu.Unlock()
 		d.Close()
-		return existing.Ref(), make(http.Header), nil
+		return existing.data.Ref(), make(http.Header), nil
+	} else if ok {
+		existing.data.Close()
 	}
-	p.loaded[key] = d
+	p.loaded[key] = entry
 	p.mu.Unlock()
 
 	return d.Ref(), make(http.Header), nil
@@ -154,14 +191,14 @@ func (p *watermarkProvider) Get(_ context.Context, o *options.Options) (imagedat
 // PNG bytes, because the pipeline's watermark input is image data, not a live
 // vips image. The re-encode costs a few hundred microseconds on a line of text
 // and buys the whole existing watermark path unchanged.
-func (p *watermarkProvider) build(spec watermarkSpec) (imagedata.ImageData, error) {
+func (p *watermarkProvider) build(ctx context.Context, spec watermarkSpec) (imagedata.ImageData, error) {
 	if spec.text == "" {
-		name, err := p.resolve(spec.path)
+		b, err := p.fetch(ctx, spec.path)
 		if err != nil {
 			return nil, err
 		}
 
-		d, err := imagedata.NewFromFile(name)
+		d, err := imagedata.NewFromBytes(b)
 		if err != nil {
 			return nil, ErrBadWatermark
 		}
@@ -176,7 +213,7 @@ func (p *watermarkProvider) build(spec watermarkSpec) (imagedata.ImageData, erro
 	defer img.Clear()
 
 	if spec.path != "" {
-		if err := p.joinImageAndText(img, spec); err != nil {
+		if err := p.joinImageAndText(ctx, img, spec); err != nil {
 			return nil, err
 		}
 	}
@@ -222,13 +259,13 @@ func (p *watermarkProvider) renderText(spec watermarkSpec) (*vips.Image, error) 
 // OSS's `order_` decides which is on the left, `interval_` is the gap, and
 // `align_` is how the shorter of the two sits against the taller: top, middle or
 // bottom.
-func (p *watermarkProvider) joinImageAndText(text *vips.Image, spec watermarkSpec) error {
-	name, err := p.resolve(spec.path)
+func (p *watermarkProvider) joinImageAndText(ctx context.Context, text *vips.Image, spec watermarkSpec) error {
+	b, err := p.fetch(ctx, spec.path)
 	if err != nil {
 		return err
 	}
 
-	data, err := imagedata.NewFromFile(name)
+	data, err := imagedata.NewFromBytes(b)
 	if err != nil {
 		return ErrBadWatermark
 	}
@@ -305,21 +342,35 @@ var ErrBadWatermark = errors.New("watermark image not found")
 // name that fontconfig resolves to nothing usable.
 var ErrBadWatermarkText = errors.New("watermark text could not be rendered")
 
-// resolve maps the object key through the same safety checks as a source path.
-func (p *watermarkProvider) resolve(path string) (string, error) {
-	name, _, err := p.src.Stat("/" + path)
+// fetch reads a watermark object through the same source, and the same size
+// bound, as the image being watermarked.
+//
+// Every failure collapses to ErrBadWatermark, including an origin that is down.
+// That is a deliberate loss of detail: this runs inside the pipeline, where the
+// alternative is leaking which watermark keys exist to anyone who can guess at
+// them. The operator gets the real error in the log.
+func (p *watermarkProvider) fetch(ctx context.Context, key string) ([]byte, error) {
+	obj, err := p.src.Open(ctx, "/"+key)
 	if err != nil {
-		return "", ErrBadWatermark
+		slog.Debug("watermark fetch failed", "key", key, "error", err)
+		return nil, ErrBadWatermark
 	}
-	return name, nil
+	defer obj.Close()
+
+	b, err := readAll(obj, p.maxBytes)
+	if err != nil {
+		slog.Debug("watermark read failed", "key", key, "error", err)
+		return nil, ErrBadWatermark
+	}
+	return b, nil
 }
 
 // Close releases every cached watermark.
 func (p *watermarkProvider) Close() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for k, d := range p.loaded {
-		d.Close()
+	for k, c := range p.loaded {
+		c.data.Close()
 		delete(p.loaded, k)
 	}
 	return nil

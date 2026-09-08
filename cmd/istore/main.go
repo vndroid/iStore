@@ -42,9 +42,18 @@ func main() {
 }
 
 func run() error {
+	// Exactly one source. Accepting both and preferring one would let an
+	// operator who added ISTORE_UPSTREAM to a unit file that still carries
+	// ISTORE_ROOT believe they had switched over while every request was still
+	// being answered off the old disk.
 	root := env("ISTORE_ROOT", "")
-	if root == "" {
-		return errors.New("ISTORE_ROOT is required: the directory images are served from")
+	upstream := env("ISTORE_UPSTREAM", "")
+	switch {
+	case root == "" && upstream == "":
+		return errors.New("one of ISTORE_ROOT or ISTORE_UPSTREAM is required: " +
+			"the directory images are served from, or the origin they are fetched from")
+	case root != "" && upstream != "":
+		return errors.New("ISTORE_ROOT and ISTORE_UPSTREAM are mutually exclusive: set one, not both")
 	}
 
 	vc := vips.NewDefaultConfig()
@@ -78,6 +87,12 @@ func run() error {
 	}
 	hc := httpserver.NewDefaultConfig()
 	hc.Root = root
+	hc.Upstream = upstream
+	hc.UpstreamTimeout = time.Duration(envInt("ISTORE_UPSTREAM_TIMEOUT_MS",
+		int(hc.UpstreamTimeout/time.Millisecond))) * time.Millisecond
+	hc.UpstreamTTL = time.Duration(envInt("ISTORE_UPSTREAM_TTL_SEC",
+		int(hc.UpstreamTTL/time.Second))) * time.Second
+	hc.UpstreamInfoMaxBytes = int64(envInt("ISTORE_UPSTREAM_INFO_MAX_BYTES", int(hc.UpstreamInfoMaxBytes)))
 	hc.CacheDir = env("ISTORE_CACHE_DIR", "")
 	hc.Concurrency = envInt("ISTORE_CONCURRENCY", runtime.GOMAXPROCS(0))
 	hc.MaxSourceBytes = int64(envInt("ISTORE_MAX_SOURCE_BYTES", int(hc.MaxSourceBytes)))
@@ -96,8 +111,18 @@ func run() error {
 	}
 
 	if !checker.SignatureEnabled() {
-		slog.Warn("ISTORE_KEY / ISTORE_SALT are unset: requests are not signed, " +
-			"so anyone who can reach this port can ask for any transform of any object under ISTORE_ROOT.")
+		if upstream != "" {
+			// Worth saying differently in upstream mode. Unsigned local mode
+			// exposes a directory; unsigned upstream mode exposes the origin,
+			// to anyone who can reach this port, with a transform chain of their
+			// choosing attached — which is a way to spend the origin's bandwidth
+			// and this box's CPU at the same time.
+			slog.Warn("ISTORE_KEY / ISTORE_SALT are unset: requests are not signed, so anyone who " +
+				"can reach this port can drive arbitrary transforms of any object on the upstream origin.")
+		} else {
+			slog.Warn("ISTORE_KEY / ISTORE_SALT are unset: requests are not signed, " +
+				"so anyone who can reach this port can ask for any transform of any object under ISTORE_ROOT.")
+		}
 	}
 
 	srv, err := httpserver.New(hc, func(wm auximageprovider.Provider) (*processing.Processor, error) {
@@ -120,7 +145,8 @@ func run() error {
 	go func() {
 		slog.Info("listening",
 			"addr", addr,
-			"root", root,
+			"source", srv.SourceDescription(),
+			"mode", sourceMode(upstream),
 			"cache", orNone(hc.CacheDir),
 			"concurrency", hc.Concurrency)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -180,6 +206,13 @@ func logLevel() slog.Level {
 	default:
 		return slog.LevelInfo
 	}
+}
+
+func sourceMode(upstream string) string {
+	if upstream != "" {
+		return "upstream"
+	}
+	return "local"
 }
 
 func orNone(s string) string {
