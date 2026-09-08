@@ -11,8 +11,28 @@ import (
 type (
 	SignatureError       struct{ *errctx.TextError }
 	ImageResolutionError struct{ *errctx.TextError }
+	AnimationFramesError struct{ *errctx.TextError }
 	SourceURLError       struct{ *errctx.TextError }
 )
+
+// newAnimationFramesError reports a source animation longer than the cap.
+//
+// The public message carries both numbers, unlike its resolution sibling which
+// says only "Invalid source image". Nothing is given away by that: the frame
+// count is exactly what `image/info` returns for the same object, and the caller
+// cannot act on "invalid" — they can act on "this is 500 frames and the limit is
+// 300".
+func newAnimationFramesError(frames, limit int) error {
+	msg := fmt.Sprintf("Source animation has %d frames, limit is %d", frames, limit)
+
+	return AnimationFramesError{errctx.NewTextError(
+		msg,
+		1,
+		errctx.WithStatusCode(http.StatusUnprocessableEntity),
+		errctx.WithPublicMessage(msg),
+		errctx.WithShouldReport(false),
+	)}
+}
 
 func newSignatureError(msg string) error {
 	return SignatureError{errctx.NewTextError(

@@ -165,18 +165,26 @@ func (p *Processor) initialLoadImage(
 }
 
 // reloadImageForProcessing reloads the image for processing.
-// For animated images, it loads all frames up to MaxAnimationFrames.
+// For animated images, it loads every frame, having first checked there are not
+// too many.
 func (p *Processor) reloadImageForProcessing(
 	img *vips.Image,
 	imgdata imagedata.ImageData,
 	po ProcessingOptions,
 	asAnimated bool,
 ) error {
-	// If we are going to process the image as animated, we need to load all frames
-	// up to MaxAnimationFrames
+	// This was min(img.Pages(), po.MaxAnimationFrames()), which quietly produced
+	// a shorter animation than the source: well-formed output, wrong length, and
+	// nothing anywhere to say so. checkImageSize below cannot catch it either —
+	// the frame count it multiplies by is the *loaded* one, so truncating first
+	// makes its arithmetic pass every time. Hence the check here, before the
+	// load, where the real count is still known.
 	if asAnimated {
-		frames := min(img.Pages(), po.MaxAnimationFrames())
-		return img.Load(imgdata, 1.0, 0, frames)
+		pages := img.Pages()
+		if err := p.securityChecker.CheckAnimationFrames(po.Options, pages); err != nil {
+			return err
+		}
+		return img.Load(imgdata, 1.0, 0, pages)
 	}
 
 	// Otherwise, we just need to remove any animation-related data

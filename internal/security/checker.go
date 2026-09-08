@@ -49,6 +49,30 @@ func (s *Checker) MaxResultDimension(o *options.Options) int {
 	return o.GetInt(keys.MaxResultDimension, s.config.MaxResultDimension)
 }
 
+// CheckAnimationFrames refuses a source with more frames than the cap allows.
+//
+// Separate from CheckDimensions for two reasons. It has to run *before* the
+// frames are loaded, because the alternative is what this replaced: the pipeline
+// loaded the first MaxAnimationFrames of them and carried on, so a 500-frame GIF
+// came back as a well-formed 300-frame animation with nothing to say it had been
+// cut. And the pixel check cannot catch that, because the frame count it
+// multiplies by is the *loaded* one — truncating first makes the product check
+// pass trivially, every time.
+//
+// Refusing is what OSS does with a source past its limits, and it is the only
+// answer consistent with the info endpoint, which reports the source's real
+// frame count. Two endpoints disagreeing about how long an animation is would be
+// worse than either answer on its own.
+//
+// Only animated *output* gets here. The same GIF asked for as JPEG or AVIF drops
+// its animation on a different path and is unaffected.
+func (s *Checker) CheckAnimationFrames(o *options.Options, frames int) error {
+	if limit := s.MaxAnimationFrames(o); frames > limit {
+		return newAnimationFramesError(frames, limit)
+	}
+	return nil
+}
+
 // CheckDimensions checks if the given dimensions are within the allowed limits
 func (s *Checker) CheckDimensions(o *options.Options, width, height, frames int) error {
 	frames = max(frames, 1)

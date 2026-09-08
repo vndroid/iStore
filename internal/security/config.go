@@ -38,6 +38,24 @@ type Config struct {
 	MaxResultDimension          int // Maximum allowed result image dimension (width or height)
 }
 
+// DefaultMaxAnimationFrames is the frame cap, and the one place iStore departs
+// from imgproxy's defaults on purpose.
+//
+// imgproxy ships 1, which means "never process anything as animated": a
+// three-frame GIF asked for as WebP comes back as a still of its first frame,
+// silently. That is a defensible default for a proxy pointed at the open
+// internet. It is the wrong one here, because iStore's job is to answer the way
+// OSS answers, and OSS keeps the animation through resize, crop and watermark.
+//
+// The number is not the real budget. That is CheckDimensions' width x height x
+// frames against MaxSrcResolution — the same product OSS uses, and the reason
+// raising this cap does not open a hole: 300 frames of 500x500 is 75 MP and is
+// refused at 50 MP whatever this says. What this cap governs is the per-frame
+// overhead a pixel count cannot see, which is why a small-but-endless animation
+// still needs a limit of its own. 300 clears essentially every real animation —
+// most are under 100 frames, and a long screen recording runs to a few hundred.
+const DefaultMaxAnimationFrames = 300
+
 // NewDefaultConfig returns a new Config instance with default values.
 func NewDefaultConfig() Config {
 	return Config{
@@ -45,7 +63,7 @@ func NewDefaultConfig() Config {
 
 		MaxSrcResolution:            50_000_000,
 		MaxSrcFileSize:              0,
-		MaxAnimationFrames:          1,
+		MaxAnimationFrames:          DefaultMaxAnimationFrames,
 		MaxAnimationFrameResolution: 0,
 		MaxResultDimension:          0,
 	}

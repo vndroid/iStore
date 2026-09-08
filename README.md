@@ -277,6 +277,43 @@ and a source over the limit gets `413` — the same answer a transform of it
 gets. The limit is checked at the read, not at the request, so a large JPEG the
 header walk can answer is still served.
 
+### Animation
+
+An animated source keeps its animation through `resize`, `crop`, `watermark`
+and the rest, as it does on OSS, as long as the output format can hold one.
+Two can: WebP and GIF. Everything else is a still, so `format,jpg` and
+`format,avif` flatten to the first frame — AVIF included, because libvips
+writes single-image HEIF only.
+
+`ISTORE_MAX_ANIMATION_FRAMES` caps the length at 300 frames, and a source with
+more is **refused** with `422`, naming both numbers:
+
+```
+{"Code":"InvalidImage","Message":"Source animation has 400 frames, limit is 300"}
+```
+
+Refusing rather than trimming is the point. Trimming is what this used to do —
+load the first N frames and carry on — and it produced a well-formed animation
+of the wrong length with nothing to say so, which is the one outcome a caller
+cannot detect. `image/info` reports the source's real frame count, so trimming
+also left the two endpoints contradicting each other. Only animated *output*
+is affected: the same over-long GIF asked for as JPEG or AVIF is a still and is
+served normally.
+
+> The default departs from imgproxy's, which is `1` — "never animate". That is
+> a reasonable default for a proxy pointed at the open internet and the wrong
+> one here. Raising it does not loosen anything: the real budget is
+> `width x height x frames` against `ISTORE_MAX_SRC_RESOLUTION` (50 MP), the
+> same product OSS bounds at 250 MP. 300 frames of 500x500 is 75 MP and is
+> refused whatever the frame cap says. What the cap governs is the per-frame
+> overhead a pixel count cannot see — a small, endless animation.
+
+One surprise worth knowing about: the output can have **fewer** frames than the
+source, without anything having been dropped. libwebp merges a frame identical
+to its predecessor into it and extends that frame's duration. A 300-frame GIF
+whose palette quantisation made some neighbours identical came out as a
+294-frame WebP here — both 12,000 ms long, and visually the same animation.
+
 **`average-hue`** — terminal, like `info`, and the response is **plain text**,
 not JSON, because that is what OSS returns:
 
@@ -317,6 +354,7 @@ unchanged:
 | `ISTORE_CACHE_MAX_AGE_HOURS` | `0` *(no age bound)* | evict entries untouched for longer |
 | `ISTORE_CACHE_EVICT_INTERVAL_MIN` | `10` | how often to sweep |
 | `ISTORE_AVIF_SPEED` | `8` | 0 slowest/smallest .. 9 fastest/largest |
+| `ISTORE_MAX_ANIMATION_FRAMES` | `300` | refuse animations longer than this |
 | `ISTORE_KEY` | *(unset — no signing)* | hex HMAC key, comma-separated for rotation |
 | `ISTORE_SALT` | *(unset — no signing)* | hex HMAC salt, one per key |
 | `ISTORE_SIGNATURE_SIZE` | `32` | bytes of the HMAC kept, 1..32 |
@@ -828,9 +866,10 @@ radius, in both shapes. On a source that is already 50% transparent, `circle`
 leaves the inside at `a=128` rather than pushing it to 255 — the mask multiplies.
 Output format follows: `circle,r_40/format,auto` with `Accept: image/avif,...`
 returns AVIF RGBA; the same request without `circle` returns AVIF RGB. With
-`format,jpg` the outside is white. On a 3-frame animated GIF with
-`ISTORE_MAX_ANIMATION_FRAMES=20`, `circle,r_20/format,webp` gives a 3-frame
-41×41 WebP with every frame masked.
+`format,jpg` the outside is white. On a 3-frame animated GIF,
+`circle,r_20/format,webp` gives a 3-frame 41×41 WebP with every frame masked —
+that one needed `ISTORE_MAX_ANIMATION_FRAMES=20` when it was measured, and
+needs nothing now that the default keeps animation.
 
 `bright` and `contrast` on a 256×64 image holding a full 0..255 grey ramp,
 sampling x = 0, 64, 128, 192, 255:
