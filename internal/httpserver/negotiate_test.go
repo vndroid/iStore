@@ -65,3 +65,34 @@ func TestAcceptKeyUsesNegotiatedOutput(t *testing.T) {
 		t.Errorf("source key = %q", got)
 	}
 }
+
+// The fallback exists so format,auto preserves the source format, and the guard
+// exists so it never pins one the build cannot write. Both halves matter: drop
+// the first and a JPEG comes back as whatever the process prefers; drop the
+// second and an AVIF source 422s on any build without an AVIF encoder — which
+// is stock Debian and Ubuntu, where libheif decodes AVIF but cannot encode it.
+func TestAutoFallbackFormat(t *testing.T) {
+	// A build that reads AVIF but cannot write it.
+	noAVIF := func(t imagetype.Type) bool { return t != imagetype.AVIF }
+	all := func(imagetype.Type) bool { return true }
+
+	tests := []struct {
+		name     string
+		source   imagetype.Type
+		supports func(imagetype.Type) bool
+		want     imagetype.Type
+	}{
+		{"savable source is preserved", imagetype.JPEG, all, imagetype.JPEG},
+		{"unsavable source falls through", imagetype.AVIF, noAVIF, imagetype.Unknown},
+		{"savable AVIF is preserved", imagetype.AVIF, all, imagetype.AVIF},
+		{"unknown source stays unknown", imagetype.Unknown, all, imagetype.Unknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := autoFallbackFormat(tt.source, tt.supports); got != tt.want {
+				t.Errorf("autoFallbackFormat(%s) = %s, want %s", tt.source, got, tt.want)
+			}
+		})
+	}
+}

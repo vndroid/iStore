@@ -661,8 +661,11 @@ func (s *Server) process(ctx context.Context, path string, chain *ossprocess.Cha
 	if chain.IsAutoFormat() {
 		if negotiated == imagetype.Unknown {
 			// With no acceptable modern format, format,auto means preserve the
-			// source format rather than fall through to process-wide preferences.
-			o.Set(keys.Format, src.Format())
+			// source format rather than fall through to process-wide preferences
+			// — but only when this build can write it.
+			if f := autoFallbackFormat(src.Format(), vips.SupportsSave); f != imagetype.Unknown {
+				o.Set(keys.Format, f)
+			}
 		} else {
 			applyAutoFormat(o, negotiated)
 		}

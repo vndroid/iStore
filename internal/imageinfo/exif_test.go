@@ -280,3 +280,53 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// IFD1 must not overwrite IFD0. Both are walked with the same tag table, and a
+// camera's thumbnail IFD repeats XResolution, YResolution, ResolutionUnit and
+// Orientation with the thumbnail's values — 72 dpi on virtually every camera,
+// whatever the image itself is. Taking the later one reports the thumbnail's
+// metadata as the image's, and it is the resolution fields the info response
+// puts front and centre.
+func TestParseEXIFIFD0WinsOverIFD1(t *testing.T) {
+	ifd0 := []exifEntry{
+		{0x011A, 5, 1, le64rational(300, 1)}, // XResolution 300/1
+		{0x0128, 3, 1, le16(2)},              // ResolutionUnit, inches
+		{0x0112, 3, 1, le16(6)},              // Orientation
+	}
+	ifd1 := []exifEntry{
+		{0x011A, 5, 1, le64rational(72, 1)}, // the thumbnail's 72/1
+		{0x0128, 3, 1, le16(2)},
+		{0x0112, 3, 1, le16(1)},
+		{0x0201, 4, 1, le32(1234)}, // JPEGInterchangeFormat, IFD1 only
+		{0x0202, 4, 1, le32(5678)}, // JPEGInterchangeFormatLength
+	}
+	b := buildEXIF(t, ifd0, ifd1)
+
+	nextAt := 8 + 2 + len(ifd0)*12
+	binary.LittleEndian.PutUint32(b[nextAt:], uint32(nextAt+4))
+
+	got := parseEXIF(b)
+
+	// IFD0's values survive.
+	if got["XResolution"] != "300/1" {
+		t.Errorf("XResolution = %q, want \"300/1\" — IFD1's thumbnail resolution overwrote the image's", got["XResolution"])
+	}
+	if got["Orientation"] != "6" {
+		t.Errorf("Orientation = %q, want \"6\"", got["Orientation"])
+	}
+
+	// IFD1 still contributes what only it has.
+	if got["JPEGInterchangeFormat"] != "1234" {
+		t.Errorf("JPEGInterchangeFormat = %q, want \"1234\"", got["JPEGInterchangeFormat"])
+	}
+	if got["JPEGInterchangeFormatLength"] != "5678" {
+		t.Errorf("JPEGInterchangeFormatLength = %q, want \"5678\"", got["JPEGInterchangeFormatLength"])
+	}
+}
+
+func le64rational(num, den uint32) []byte {
+	b := make([]byte, 8)
+	binary.LittleEndian.PutUint32(b[0:], num)
+	binary.LittleEndian.PutUint32(b[4:], den)
+	return b
+}

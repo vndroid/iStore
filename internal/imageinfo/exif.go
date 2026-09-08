@@ -109,6 +109,18 @@ func parseEXIF(b []byte) map[string]string {
 				continue
 			}
 
+			// First writer wins, and the queue order is what makes that the
+			// right rule: IFD0 describes the image, IFD1 describes the embedded
+			// thumbnail, and IFD1 repeats a good many of the same tags with the
+			// thumbnail's own values. XResolution is the one that bites —
+			// virtually every camera writes 72 there whatever the image's real
+			// resolution is — but Orientation, ResolutionUnit and Compression
+			// collide the same way. Letting the later IFD overwrite reports the
+			// thumbnail's metadata as the image's.
+			if _, taken := out[name]; taken {
+				continue
+			}
+
 			if v, ok := exifValue(b, bo, p, typ, n); ok {
 				out[name] = v
 			}

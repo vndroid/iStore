@@ -94,3 +94,21 @@ func acceptKey(format imagetype.Type) string {
 func varyOnAccept(w http.ResponseWriter) {
 	w.Header().Add("Vary", "Accept")
 }
+
+// autoFallbackFormat is what format,auto writes into the options bag when the
+// client accepted no modern format: the source's own format, so a JPEG comes
+// back a JPEG instead of falling through to a process-wide preference.
+//
+// It returns Unknown — meaning "leave the format unset and let the pipeline
+// choose" — when this build cannot write that format. Pinning a format the
+// saver does not have turns an ordinary request into a 422 from
+// determineOutputFormat, and the case is not hypothetical: libheif decodes AVIF
+// on a stock Debian or Ubuntu build but cannot encode it without the aomenc
+// plugin, so `format,auto` with a plain `Accept: */*` on an AVIF source would
+// fail for every browser.
+func autoFallbackFormat(source imagetype.Type, supports func(imagetype.Type) bool) imagetype.Type {
+	if source != imagetype.Unknown && supports(source) {
+		return source
+	}
+	return imagetype.Unknown
+}
