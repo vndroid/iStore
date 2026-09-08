@@ -324,7 +324,7 @@ whose palette quantisation made some neighbours identical came out as a
 
 An animated PNG is a case of its own, because two parts of iStore disagree about
 it. The header walk behind `image/info` reads the `acTL` chunk, so info reports
-the real frame count. libvips has no APNG decoder before 8.19, so it loads the
+the real frame count. No released libvips reads APNG frames, so it loads the
 default image and reports one page.
 
 Naming a format that could have carried the animation is therefore refused,
@@ -563,6 +563,14 @@ internal/timeout/        the one function iStore needed from imgproxy's server p
 
 ## Build requirements
 
+**Linux only.** That is the whole of the support claim: Linux is what CI
+builds and tests, what the Dockerfile below produces, and the only platform
+any of this has been measured on. Nothing here is deliberately hostile to
+another Unix — the code is ordinary cgo and the build tags are honest about
+which platform they cover — but if it does not build or does not behave on
+macOS or a BSD, that is not a bug against iStore. The macOS notes further
+down are for working on the code, not for running it.
+
 - Go 1.24+
 - libvips 8.13+ with, at minimum: libjpeg, libpng, libwebp (8.16+ only if you
   need to *read* animated JPEG XL — see "Not built yet")
@@ -646,7 +654,7 @@ apt-get install -y libvips-dev libheif-plugin-aomenc libheif-plugin-dav1d
 The stock `libvips-dev` on Ubuntu has HEIF *decode* only; without
 `libheif-plugin-aomenc` an AVIF save fails with `heifsave: Unsupported compression`.
 
-macOS:
+macOS — for local development only, untested and unsupported as a target:
 
 ```sh
 brew install vips        # includes libheif with aom, and libjxl
@@ -984,12 +992,18 @@ Every action in OSS's own list is implemented. What is left is not an action.
   single frame, which is self-consistent because that loader also sets no page
   metadata, so `IsAnimated()` stays false and the animated path is never taken.
   Still images and JXL output are unaffected either way.
-- **Animated PNG needs libvips 8.19**, where `pngload` and `pngsave` both gain
-  APNG (unreleased at the time of writing; Alpine 3.23 ships 8.17.3). Until
-  then an APNG is a still to the pipeline, and asking for it as WebP or GIF is
-  refused rather than flattened — see the APNG note under Animation. Nothing
-  needs changing when 8.19 arrives: the refusal is driven by comparing the
-  container's frame count against what libvips loaded, so it retires itself.
+- **Animated PNG is not readable by any released libvips.** `pngload` and
+  `pngsave` gained APNG on master, under a `date-tbd 8.19.0` heading; the newest
+  tag is v8.18.6, so there is no release to upgrade to. When there is, it will
+  not be sufficient on its own: the code lives in the libpng path (`vipspng.c`)
+  behind `#ifdef PNG_APNG_SUPPORTED`, so it also needs an APNG-capable libpng —
+  1.8+, or 1.6 with the APNG patch — and the libspng path has none of it.
+  Until a build can actually read those frames, an APNG is a still to the
+  pipeline and asking for it as WebP or GIF is refused rather than flattened;
+  see the APNG note under Animation. Nothing needs changing whenever that day
+  comes: the refusal compares the container's frame count against what libvips
+  loaded, not against a version number, so it retires itself on exactly the
+  builds that can.
 - **TIFF's `unlimited` load flag needs libvips 8.17 built against libtiff
   4.7+.** iStore asks the loader whether it has the property rather than
   reading the version, because 8.17 on an older libtiff does not register it.

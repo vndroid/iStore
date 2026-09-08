@@ -183,9 +183,12 @@ func (p *Processor) initialLoadImage(
 // format that could have carried it.
 //
 // APNG is the case that exists today. iStore's own header walk reads the acTL
-// chunk, so image/info reports the real frame count; libvips has no APNG decoder
-// before 8.19, so it loads the default image and reports one page. The result
-// was a silent flattening of exactly the shape the frame cap's refusal removed:
+// chunk, so image/info reports the real frame count; no released libvips reads
+// APNG frames, so it loads the default image and reports one page. (APNG landed
+// in libvips master under an unreleased 8.19.0 heading, in the libpng path only
+// and behind PNG_APNG_SUPPORTED, so even that will depend on how the library was
+// built. The comparison below does not care.) The result was a silent flattening
+// of exactly the shape the frame cap's refusal removed:
 // ask for a three-frame APNG as WebP — a format that holds animation perfectly
 // well — and get a well-formed one-frame WebP back, while image/info goes on
 // saying three.

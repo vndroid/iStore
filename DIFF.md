@@ -78,7 +78,7 @@ to OSS's documented example, key order included.
 |---|---|---|
 | Animated output formats | — | WebP and GIF only. `format,avif` flattens to the first frame, because libvips writes single-image HEIF. |
 | Source longer than the frame cap | Bounded by total pixels only | `422 Source animation has N frames, limit is 300`. Refused rather than trimmed: a trimmed animation is well-formed at the wrong length and the caller cannot tell. Only animated *output* is affected — the same source asked for as JPEG is a still and is served. |
-| APNG asked for as `format,webp` or `format,gif` | — | `422 This build of libvips cannot read png animation`. Any still format, a bare `resize`, and `format,auto` all flatten and are served normally. Retires itself on libvips 8.19. |
+| APNG asked for as `format,webp` or `format,gif` | — | `422 This build of libvips cannot read png animation`. Any still format, a bare `resize`, and `format,auto` all flatten and are served normally. The refusal is a runtime comparison, not a version check, so it retires itself on any build that can read APNG frames. |
 
 ## Numeric approximations
 
@@ -128,8 +128,10 @@ accepts shapes OSS would reject.
 
 ## Build-dependent behaviour
 
-Behaviour that depends on the libvips this binary was linked against, not on
-iStore. The encodable set is probed by a real encode at startup and logged:
+iStore is supported on **Linux only** — that is what CI builds and tests, and
+the only platform any of this was measured on. The rows below are about the
+libvips a Linux binary was linked against, not about iStore. The encodable set
+is probed by a real encode at startup and logged:
 
 ```
 level=INFO msg="encodable formats" formats="[jpg png webp gif avif jxl tiff bmp ico]"
@@ -140,7 +142,7 @@ level=INFO msg="encodable formats" formats="[jpg png webp gif avif jxl tiff bmp 
 | A format this build cannot encode | `400 format "heic" cannot be produced by this build of libvips`, before any work starts |
 | TIFF sources | The loader's `unlimited` flag needs libvips 8.17 built against libtiff 4.7+. Where it is absent libvips keeps its own decode limits; TIFFs still load. |
 | Animated JPEG XL | Needs libvips 8.16 to read; older builds see a still |
-| APNG | Needs libvips 8.19 to read; see Animation above |
+| APNG | No released libvips reads APNG frames. It is on master under an unreleased `8.19.0` heading, in the libpng path only and behind `PNG_APNG_SUPPORTED`, so a future release is necessary but not sufficient. See Animation above. |
 
 ## Errors
 
