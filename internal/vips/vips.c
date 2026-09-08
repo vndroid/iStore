@@ -16,6 +16,35 @@
 #define IMGPROXY_META_ICC_NAME "imgproxy-icc-profile"
 #define IMGPROXY_ICC_IMPORTED "imgproxy-icc-imported"
 
+// tiffload's `unlimited` is the same trap as jxlload's `page`, and it needs more
+// than a version check to avoid.
+//
+// libvips 8.17 added it, so a version macro would cover the common case. But the
+// ChangeLog entry says "requires libtiff 4.7.0+": libvips registers the property
+// only when the libtiff it was built against is new enough, so an 8.17 built on
+// libtiff 4.6 registers no `unlimited` and fails exactly like 8.15 does. The
+// version number cannot answer that. Asking the operation class whether the
+// property exists can, and it costs one lookup at startup.
+static gboolean tiffload_unlimited = FALSE;
+
+// Reports whether an operation takes an argument of this name, by asking its
+// class rather than inferring it from VIPS_MAJOR/MINOR_VERSION.
+gboolean
+vips_operation_has_argument(const char *nickname, const char *name)
+{
+  VipsObjectClass *class = (VipsObjectClass *) vips_class_find("VipsOperation", nickname);
+  if (!class)
+    return FALSE;
+
+  return g_object_class_find_property(G_OBJECT_CLASS(class), name) != NULL;
+}
+
+gboolean
+vips_tiffload_supports_unlimited()
+{
+  return tiffload_unlimited;
+}
+
 int
 vips_initialize()
 {
@@ -37,7 +66,14 @@ vips_initialize()
   extern GType vips_foreign_save_ico_target_get_type(void);
   vips_foreign_save_ico_target_get_type();
 
-  return vips_init("imgproxy");
+  int res = vips_init("imgproxy");
+  if (res)
+    return res;
+
+  // After vips_init, so the loader classes are registered and can be asked.
+  tiffload_unlimited = vips_operation_has_argument("tiffload_source", "unlimited");
+
+  return 0;
 }
 
 void
@@ -191,12 +227,25 @@ vips_heifload_source_go(VipsImgproxySource *source, VipsImage **out, ImgproxyLoa
 int
 vips_tiffload_source_go(VipsImgproxySource *source, VipsImage **out, ImgproxyLoadOptions lo)
 {
+  if (tiffload_unlimited)
+    return vips_tiffload_source(
+        VIPS_SOURCE(source), out,
+        "access", VIPS_ACCESS_SEQUENTIAL,
+        "page", lo.Page,
+        "n", lo.Pages,
+        "unlimited", lo.TiffUnlimited,
+        NULL);
+
+  // Without the option the loader keeps its own DoS limits, which is the
+  // conservative direction to fail in: some very large TIFFs that would load on
+  // a newer libvips are refused here. The alternative is what this replaced —
+  // passing a property the loader does not have, which fails *every* TIFF with
+  // "no property named `unlimited'".
   return vips_tiffload_source(
       VIPS_SOURCE(source), out,
       "access", VIPS_ACCESS_SEQUENTIAL,
       "page", lo.Page,
       "n", lo.Pages,
-      "unlimited", lo.TiffUnlimited,
       NULL);
 }
 

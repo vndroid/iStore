@@ -49,6 +49,17 @@ type Info struct {
 	// image carries none. OSS merges these into the same flat object as the
 	// fields above, so MarshalJSON does too.
 	Exif map[string]string
+
+	// FrameCountKnown is false when the header walk could not settle the count
+	// and FrameCount is a floor rather than the answer: an animated WebP, whose
+	// frames are ANMF chunks spread through the file, or a GIF whose blocks run
+	// past the header window.
+	//
+	// Not marshalled. It exists so the caller can decide whether a libvips load
+	// is worth spending on the real number — see httpserver's info handler. A
+	// number that is quietly wrong is the one outcome worth avoiding: nothing
+	// downstream can tell 183 frames from 200.
+	FrameCountKnown bool
 }
 
 // value is the {"value": "..."} wrapper OSS uses for every field.
@@ -111,10 +122,11 @@ func Read(r io.Reader, size int64) (*Info, error) {
 		Format:   t,
 		// Defaults match what OSS reports for an image carrying no resolution
 		// metadata: unit 1 ("none"), square 1/1 pixel aspect.
-		FrameCount:     1,
-		ResolutionUnit: 1,
-		XResolution:    "1/1",
-		YResolution:    "1/1",
+		FrameCount:      1,
+		FrameCountKnown: true,
+		ResolutionUnit:  1,
+		XResolution:     "1/1",
+		YResolution:     "1/1",
 	}
 
 	switch t {
@@ -133,7 +145,12 @@ func Read(r io.Reader, size int64) (*Info, error) {
 		return info, ErrUnsupportedContainer{t}
 	}
 	if err != nil {
-		return nil, err
+		// The half-filled Info goes back with the error on purpose. FileSize and
+		// Format are already right — they came from the file size and the magic
+		// bytes, neither of which the header walk can invalidate — so a caller
+		// that can fill in the geometry another way has somewhere to put it.
+		// ImageWidth is left at zero, which is how that caller knows it must.
+		return info, err
 	}
 
 	return info, nil
@@ -222,6 +239,30 @@ func ratio(n uint16) string {
 	return strconv.Itoa(int(n)) + "/1"
 }
 
+// ApplyEXIF parses a raw EXIF block and merges it into info, exactly as the
+// JPEG, PNG and WebP header walks do with the block they find themselves.
+//
+// It is exported for the containers this package does not parse. libvips hands
+// back the same bytes for AVIF, HEIC and JXL under the "exif-data" key — a bare
+// TIFF block, the identical shape PNG's eXIf chunk and WebP's EXIF chunk carry —
+// so the caller that already had to load one of those through libvips can route
+// it here and get the same 25 fields a JPEG gets, rather than the eight that
+// container walk could manage on its own.
+//
+// A leading "Exif\0\0" is tolerated. JPEG's APP1 segment carries that prefix and
+// readJPEG strips it before calling in, but the blob libvips exposes has been
+// seen both ways depending on the loader, and the six bytes are unambiguous.
+//
+// Nothing is reported: a block that will not parse leaves info as it was. The
+// caller has already answered the request by this point, and EXIF is the
+// decoration on it.
+func ApplyEXIF(info *Info, b []byte) {
+	if len(b) >= 6 && string(b[:6]) == "Exif\x00\x00" {
+		b = b[6:]
+	}
+	readEXIF(b, info)
+}
+
 // readEXIF parses an EXIF block and records both the full tag set and the three
 // resolution fields the basic response reports.
 //
@@ -308,29 +349,31 @@ func readGIF(b []byte, info *Info) error {
 	}
 	info.ImageWidth = int(binary.LittleEndian.Uint16(b[6:]))
 	info.ImageHeight = int(binary.LittleEndian.Uint16(b[8:]))
-	info.FrameCount = countGIFFrames(b)
+	info.FrameCount, info.FrameCountKnown = countGIFFrames(b)
 	return nil
 }
 
-// countGIFFrames walks the block structure counting image descriptors.
+// countGIFFrames walks the block structure counting image descriptors, and
+// reports whether it reached the trailer.
 //
-// It only sees what fits in the header buffer, so for a long animation the count
-// is a floor, not the truth. That is flagged by returning at least 1 and never
-// erroring: a caller sizing an <img> does not care, and a caller that does
-// should decode the file.
-func countGIFFrames(b []byte) int {
+// It only sees what fits in the header buffer. A short GIF ends inside it and
+// the count is exact; a long one does not, and then the count is a floor — a
+// 200-frame animation whose blocks run past 64 KiB counts 183 and has no way to
+// know it. Returning that as though it were the answer is the failure mode worth
+// avoiding, so the second return says which of the two happened and the caller
+// decides whether to go and find out properly.
+func countGIFFrames(b []byte) (frames int, complete bool) {
 	pos := 13
 	if len(b) > 10 && b[10]&0x80 != 0 { // global colour table present
 		pos += 3 * (1 << ((b[10] & 0x07) + 1))
 	}
 
-	frames := 0
 	for pos < len(b) {
 		switch b[pos] {
 		case 0x2C: // image descriptor
 			frames++
 			if pos+10 > len(b) {
-				return max(frames, 1)
+				return max(frames, 1), false
 			}
 			flags := b[pos+9]
 			pos += 10
@@ -341,20 +384,24 @@ func countGIFFrames(b []byte) int {
 			pos = skipGIFSubBlocks(b, pos)
 		case 0x21: // extension
 			if pos+2 > len(b) {
-				return max(frames, 1)
+				return max(frames, 1), false
 			}
 			pos += 2
 			pos = skipGIFSubBlocks(b, pos)
-		case 0x3B: // trailer
-			return max(frames, 1)
+		case 0x3B: // trailer: the whole block structure was in the buffer
+			return max(frames, 1), true
 		default:
-			return max(frames, 1)
+			// Something unparseable. The count so far stands, but only as a
+			// floor.
+			return max(frames, 1), false
 		}
 		if pos <= 0 {
-			return max(frames, 1)
+			return max(frames, 1), false
 		}
 	}
-	return max(frames, 1)
+
+	// Ran out of buffer without meeting the trailer.
+	return max(frames, 1), false
 }
 
 func skipGIFSubBlocks(b []byte, pos int) int {
@@ -382,10 +429,14 @@ func readWebP(b []byte, info *Info) error {
 		info.ImageWidth = int(b[24]) | int(b[25])<<8 | int(b[26])<<16 + 1
 		info.ImageHeight = int(b[27]) | int(b[28])<<8 | int(b[29])<<16 + 1
 		if b[20]&0x02 != 0 {
-			// Animation flag. The frame count lives in ANMF chunks; counting
-			// them means walking the whole file, so report it as animated
-			// without a precise count.
-			info.FrameCount = 0
+			// Animation flag. WebP has no frame-count field: the frames are ANMF
+			// chunks, and counting them means walking the whole file, which is
+			// the one thing this package exists not to do. So the count is left
+			// unsettled for the caller to resolve, and 1 is the floor — an
+			// animated WebP has at least one frame, which is a better answer to
+			// be stuck with than the 0 this used to report.
+			info.FrameCount = 1
+			info.FrameCountKnown = false
 		}
 		// Only the extended format can carry metadata chunks, and the EXIF one
 		// holds a bare TIFF block as PNG's does.

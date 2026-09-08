@@ -88,6 +88,14 @@ func Init(c *Config) error {
 
 	gifResolutionLimit = int(C.gif_resolution_limit())
 
+	// Probe every saver now, on this goroutine, while the process is still
+	// single-threaded and nobody is waiting on a response. SupportsSave caches,
+	// so this is the only time any encoding happens for the question.
+	for _, t := range saveableTypes {
+		SupportsSave(t)
+	}
+	Cleanup()
+
 	return nil
 }
 
@@ -135,8 +143,30 @@ func Error() error {
 	return newVipsError(errstr)
 }
 
+// MetaEXIF is libvips's key for the raw EXIF block (VIPS_META_EXIF_NAME). Every
+// loader that finds EXIF attaches it under this name, whatever the container
+// wrapped it in, and the bytes are a bare TIFF block.
+const MetaEXIF = "exif-data"
+
 func hasOperation(name string) bool {
 	return C.vips_type_find(cachedCString("VipsOperation"), cachedCString(name)) != 0
+}
+
+// operationHasArgument reports whether a loader or saver takes an argument of
+// this name in the libvips this binary is linked against.
+//
+// Version numbers cannot answer that question. tiffload's `unlimited` arrived in
+// 8.17 but only when libvips was built against libtiff 4.7 or newer, so an 8.17
+// without it is a real build, not a hypothetical one — and passing an argument a
+// loader does not have fails the load outright rather than being ignored.
+func operationHasArgument(nickname, name string) bool {
+	return C.vips_operation_has_argument(cachedCString(nickname), cachedCString(name)) != 0
+}
+
+// tiffSupportsUnlimited reports what Init established about this build's
+// tiffload_source. The loader itself consults the same answer on the C side.
+func tiffSupportsUnlimited() bool {
+	return C.vips_tiffload_supports_unlimited() != 0
 }
 
 func SupportsLoad(it imagetype.Type) bool {
@@ -174,37 +204,116 @@ func SupportsLoad(it imagetype.Type) bool {
 	return sup
 }
 
+// SupportsSave reports whether this build can actually produce it.
+//
+// Not whether the saver operation was compiled in — that is a weaker question,
+// and for HEIC and AVIF it is the wrong one. libvips has a single heifsave; it
+// hands the pixels to libheif, which dispatches to a codec plugin chosen by the
+// `compression` setting. A build with libheif and no AV1 encoder — Debian and
+// Ubuntu's default, where aomenc ships as a separate package — has
+// heifsave_target and then fails every AVIF at run time with "heifsave:
+// Unsupported compression". Answered from the operation table, that build says
+// yes, the request gets past validation, and the failure surfaces as a 500 from
+// deep inside the pipeline with no usable message.
+//
+// So the answer comes from encoding an image: 32x32, once per format, cached.
+// Init warms the whole set, so no request pays for it. It is the only version of
+// this question that cannot lie.
 func SupportsSave(it imagetype.Type) bool {
 	if sup, ok := typeSupportSave.Load(it); ok {
 		return sup.(bool) //nolint:forcetypeassert
 	}
 
-	sup := false
-
-	switch it {
-	case imagetype.JPEG:
-		sup = hasOperation("jpegsave_target")
-	case imagetype.JXL:
-		sup = hasOperation("jxlsave_target")
-	case imagetype.PNG:
-		sup = hasOperation("pngsave_target")
-	case imagetype.WEBP:
-		sup = hasOperation("webpsave_target")
-	case imagetype.GIF:
-		sup = hasOperation("gifsave_target")
-	case imagetype.HEIC, imagetype.AVIF:
-		sup = hasOperation("heifsave_target")
-	case imagetype.BMP:
-		sup = hasOperation("bmpsave_target")
-	case imagetype.TIFF:
-		sup = hasOperation("tiffsave_target")
-	case imagetype.ICO:
-		sup = hasOperation("icosave_target")
-	}
+	sup := hasSaveOperation(it) && probeSave(it)
 
 	typeSupportSave.Store(it, sup)
 
 	return sup
+}
+
+// hasSaveOperation reports whether the saver was compiled in at all. Cheap, and
+// it spares probeSave from formats that have no chance.
+func hasSaveOperation(it imagetype.Type) bool {
+	switch it {
+	case imagetype.JPEG:
+		return hasOperation("jpegsave_target")
+	case imagetype.JXL:
+		return hasOperation("jxlsave_target")
+	case imagetype.PNG:
+		return hasOperation("pngsave_target")
+	case imagetype.WEBP:
+		return hasOperation("webpsave_target")
+	case imagetype.GIF:
+		return hasOperation("gifsave_target")
+	case imagetype.HEIC, imagetype.AVIF:
+		return hasOperation("heifsave_target")
+	case imagetype.BMP:
+		return hasOperation("bmpsave_target")
+	case imagetype.TIFF:
+		return hasOperation("tiffsave_target")
+	case imagetype.ICO:
+		return hasOperation("icosave_target")
+	}
+	return false
+}
+
+// saveableTypes is every type Image.Save has a branch for. Init probes each one.
+var saveableTypes = []imagetype.Type{
+	imagetype.JPEG, imagetype.PNG, imagetype.WEBP, imagetype.GIF,
+	imagetype.AVIF, imagetype.HEIC, imagetype.JXL,
+	imagetype.TIFF, imagetype.BMP, imagetype.ICO,
+}
+
+// probeSave encodes a small image and reports whether it came out.
+//
+// The size is not arbitrary. 1x1 is refused or special-cased by several
+// encoders; 32x32 is past every minimum block size in use and still encodes in
+// microseconds, AVIF included.
+//
+// A failure here is the answer, not an error to propagate: the caller asked
+// whether the format works, and "no" is a valid reply. Image.Save has already
+// drained the libvips error buffer on its way out, so nothing is left behind for
+// the next real operation to trip over.
+func probeSave(it imagetype.Type) bool {
+	img, err := newProbeImage()
+	if err != nil {
+		return false
+	}
+	defer img.Clear()
+
+	d, err := img.Save(it, 75, SaveOverrides{})
+	if err != nil {
+		return false
+	}
+	d.Close()
+
+	return true
+}
+
+// newProbeImage is a 32x32 sRGB image, the subject of probeSave.
+func newProbeImage() (*Image, error) {
+	var tmp *C.VipsImage
+
+	if C.vips_black_go(&tmp, 32, 32, 3) != 0 {
+		return nil, Error()
+	}
+
+	return &Image{VipsImage: tmp}, nil
+}
+
+// SaveableTypes returns the formats this build can really encode, in the order
+// of saveableTypes. Init has already probed them, so this is a map read.
+//
+// It exists so the process can say at startup which formats it can serve, rather
+// than letting an operator find out from a 400 in production.
+func SaveableTypes() []imagetype.Type {
+	out := make([]imagetype.Type, 0, len(saveableTypes))
+	for _, t := range saveableTypes {
+		if SupportsSave(t) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func GifResolutionLimit() int {

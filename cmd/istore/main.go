@@ -23,6 +23,8 @@ import (
 	"github.com/kane/istore/internal/auximageprovider"
 	"github.com/kane/istore/internal/cache"
 	"github.com/kane/istore/internal/httpserver"
+	"github.com/kane/istore/internal/imagetype"
+	"github.com/kane/istore/internal/ossprocess"
 	"github.com/kane/istore/internal/processing"
 	"github.com/kane/istore/internal/security"
 	"github.com/kane/istore/internal/vips"
@@ -53,6 +55,13 @@ func run() error {
 		return err
 	}
 	defer vips.Shutdown()
+
+	// Init has just tried a real encode of every format, so this is the true
+	// list, not the list of savers that happen to be compiled in. Worth a line
+	// at startup: "avif is missing" is much easier to act on here than as a 400
+	// from production, and the two builds that produce it — libheif without an
+	// AV1 encoder, libvips without libjxl — look identical from the outside.
+	slog.Info("encodable formats", "formats", formatNames(vips.SaveableTypes()))
 
 	sc := security.NewDefaultConfig()
 	if _, err := security.LoadConfigFromEnv(&sc); err != nil {
@@ -131,6 +140,16 @@ func run() error {
 		defer cancel()
 		return httpSrv.Shutdown(ctx)
 	}
+}
+
+// formatNames spells a list of types the way a request would, so what the log
+// prints is what a caller would put after `format,`.
+func formatNames(types []imagetype.Type) []string {
+	out := make([]string, len(types))
+	for i, t := range types {
+		out[i] = ossprocess.OSSFormatName(t)
+	}
+	return out
 }
 
 func env(name, def string) string {

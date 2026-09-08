@@ -304,9 +304,16 @@ func (s *Server) serveOriginal(w http.ResponseWriter, r *http.Request) {
 // the image. It is still far cheaper than a transform: one decode, no resize, no
 // encode, and a seven-byte body.
 func (s *Server) serveAverageHue(w http.ResponseWriter, r *http.Request) {
-	name, _, err := s.src.Stat(r.URL.Path)
+	name, st, err := s.src.Stat(r.URL.Path)
 	if err != nil {
 		s.failSource(w, r, err)
+		return
+	}
+	// The decode below reads the whole file into memory, so this endpoint is
+	// bounded by the same limit as a transform. It used to have no bound at all,
+	// which made it the cheapest way to ask the process to allocate 2 GB.
+	if s.tooLarge(st.Size()) {
+		s.failTooLarge(w, r, st.Size())
 		return
 	}
 
@@ -367,12 +374,48 @@ func (s *Server) serveInfo(w http.ResponseWriter, r *http.Request) {
 	info, err := imageinfo.Read(f, f.Size)
 
 	// imageinfo parses JPEG, PNG, GIF and WebP headers directly, which is the
-	// cheap path. Formats it does not parse (AVIF, HEIC, JXL, TIFF, BMP) fall
-	// back to libvips, which costs a header load but is still far short of a
-	// full decode.
+	// cheap path and answers most requests outright. Three things send a request
+	// to libvips instead, and they are three different situations:
+	//
+	//   - a container imageinfo has no walk for (AVIF, HEIC, JXL, TIFF, BMP);
+	//   - a JPEG whose SOF sits past the 64 KiB window, which a big EXIF
+	//     thumbnail or a segmented ICC profile is enough to cause;
+	//   - an animated WebP, or a GIF whose blocks outrun the window, where the
+	//     geometry is known but the frame count is only a floor.
+	//
+	// The first two have no answer without libvips. The third has a usable one
+	// already, so its fallback is best-effort: if it cannot run, the floor is
+	// still served.
+	//
+	// Note what is *not* on that list: a missing Exif map. It is tempting to add
+	// it — that is where AVIF's EXIF comes from — but "this image has no EXIF" is
+	// indistinguishable from "EXIF has not been looked for yet", and a JPEG
+	// without EXIF is the single most common request there is. Sending those to
+	// libvips reads every one of them off disk in full: measured at +80 MB of RSS
+	// across five info requests for one 40 MB JPEG that the header walk had
+	// already answered from its first 64 KiB. So EXIF is only ever filled in on a
+	// trip that was happening anyway, inside infoViaVips.
 	var unsupported imageinfo.ErrUnsupportedContainer
-	if errors.As(err, &unsupported) {
-		info, err = s.infoViaVips(f, info)
+	needsGeometry := errors.As(err, &unsupported) || errors.Is(err, imageinfo.ErrHeaderTooShort)
+
+	if needsGeometry || !info.FrameCountKnown {
+		refined, rerr := s.infoViaVips(f, info)
+		switch {
+		case rerr == nil:
+			info, err = refined, nil
+		case needsGeometry:
+			// Nothing else was going to supply the dimensions.
+			err = rerr
+		default:
+			// Keep what the header walk found and drop the refinement.
+			slog.Debug("info refinement failed", "path", r.URL.Path, "error", rerr)
+			err = nil
+		}
+	}
+	var big errSourceTooLarge
+	if errors.As(err, &big) {
+		s.failTooLarge(w, r, big.size)
+		return
 	}
 	if err != nil {
 		s.fail(w, r, http.StatusUnprocessableEntity, "InvalidImage", err.Error())
@@ -394,10 +437,23 @@ func (s *Server) serveInfo(w http.ResponseWriter, r *http.Request) {
 	w.Write(body)
 }
 
-// infoViaVips fills in dimensions and frame count for containers imageinfo does
-// not parse. It reuses the partially-filled Info (format and file size are
-// already right) so only the pixel geometry comes from libvips.
+// infoViaVips fills in whatever the header walk could not, and only that.
+//
+// Each field is taken from libvips on its own condition, because the three
+// callers want different subsets and there is no reason to overwrite a value
+// that was read from the container itself. `partial` already carries the two
+// fields that are right regardless — file size, and the format from the magic
+// bytes — so they are never touched here.
+//
+// This reads the file whole (imagedata.NewFromFile), which is why the size limit
+// is checked before it and not at the top of the handler: a JPEG whose header
+// answers the question outright should not be refused for being large, and one
+// that has to come through here should be bounded like any other decode.
 func (s *Server) infoViaVips(f *source.File, partial *imageinfo.Info) (*imageinfo.Info, error) {
+	if s.tooLarge(f.Size) {
+		return nil, errSourceTooLarge{size: f.Size, limit: s.cfg.MaxSourceBytes}
+	}
+
 	if _, err := f.Seek(0, 0); err != nil {
 		return nil, err
 	}
@@ -418,9 +474,33 @@ func (s *Server) infoViaVips(f *source.File, partial *imageinfo.Info) (*imageinf
 	}
 
 	out := *partial
-	out.ImageWidth = img.Width()
-	out.ImageHeight = img.PageHeight()
-	out.FrameCount = img.Pages()
+
+	// Zero width is how Read reports that it never got as far as the geometry.
+	if out.ImageWidth == 0 {
+		out.ImageWidth = img.Width()
+		out.ImageHeight = img.PageHeight()
+	}
+
+	// Pages() reads the container's own page count, not the number of frames
+	// this load pulled in — the load above asks for one — so it is the real
+	// answer for an animated WebP or a GIF longer than the header window.
+	if !out.FrameCountKnown {
+		out.FrameCount = img.Pages()
+		out.FrameCountKnown = true
+	}
+
+	// The EXIF libvips found, for the containers whose walk this package does
+	// not have: AVIF and HEIC keep it in an ISOBMFF item, JXL in a box, and both
+	// come back here as the same bare TIFF block a PNG carries in eXIf. Without
+	// this the response has eight fields and — worse — reports the *defaults*
+	// for XResolution, YResolution and ResolutionUnit, which is not a gap in the
+	// answer but a wrong one.
+	if out.Exif == nil {
+		if b, err := img.GetBlob(vips.MetaEXIF); err == nil && len(b) > 0 {
+			imageinfo.ApplyEXIF(&out, b)
+		}
+	}
+
 	return &out, nil
 }
 
@@ -432,9 +512,8 @@ func (s *Server) serveProcessed(w http.ResponseWriter, r *http.Request, chain *o
 		s.failSource(w, r, err)
 		return
 	}
-	if s.cfg.MaxSourceBytes > 0 && st.Size() > s.cfg.MaxSourceBytes {
-		s.fail(w, r, http.StatusRequestEntityTooLarge, "SourceTooLarge",
-			fmt.Sprintf("source is %d bytes, limit is %d", st.Size(), s.cfg.MaxSourceBytes))
+	if s.tooLarge(st.Size()) {
+		s.failTooLarge(w, r, st.Size())
 		return
 	}
 
@@ -522,8 +601,17 @@ func (s *Server) sourceSize(path string) (int, int, error) {
 	}
 
 	info, err := imageinfo.Read(f, st.Size())
+
+	// Same two fallback conditions as the info handler, for the same reasons: a
+	// container with no header walk, or a JPEG whose SOF is past the window.
+	// Missing the second one here was worse than missing it there — it turned a
+	// plain `resize` on an ordinary camera JPEG into a 422, because resize is
+	// exactly the action that needs the source dimensions.
+	//
+	// No size check: serveProcessed has already applied MaxSourceBytes to this
+	// request, and it is the only caller.
 	var unsupported imageinfo.ErrUnsupportedContainer
-	if errors.As(err, &unsupported) {
+	if errors.As(err, &unsupported) || errors.Is(err, imageinfo.ErrHeaderTooShort) {
 		s.acquire()
 		defer s.release()
 
@@ -584,6 +672,32 @@ func (s *Server) process(ctx context.Context, path string, chain *ossprocess.Cha
 }
 
 // ------------------------------------------------------------------- helpers
+
+// tooLarge reports whether a source of this size is over MaxSourceBytes. Zero
+// means no limit.
+//
+// Every path that reads a whole file into memory goes through this: the
+// transform, average-hue, and the libvips fallback inside the info handler. The
+// paths that read only a header do not, which is why the check sits at each read
+// rather than once at the top of ServeHTTP.
+func (s *Server) tooLarge(size int64) bool {
+	return s.cfg.MaxSourceBytes > 0 && size > s.cfg.MaxSourceBytes
+}
+
+func (s *Server) failTooLarge(w http.ResponseWriter, r *http.Request, size int64) {
+	s.fail(w, r, http.StatusRequestEntityTooLarge, "SourceTooLarge",
+		fmt.Sprintf("source is %d bytes, limit is %d", size, s.cfg.MaxSourceBytes))
+}
+
+// errSourceTooLarge carries the refusal out of a helper that cannot write the
+// response itself. failProcess and the info handler turn it back into a 413.
+type errSourceTooLarge struct{ size, limit int64 }
+
+func (e errSourceTooLarge) Error() string {
+	return fmt.Sprintf("source is %d bytes, limit is %d", e.size, e.limit)
+}
+
+func (e errSourceTooLarge) StatusCode() int { return http.StatusRequestEntityTooLarge }
 
 // acquire/release bound concurrent libvips work.
 func (s *Server) acquire() { s.sem <- struct{}{} }

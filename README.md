@@ -239,8 +239,18 @@ overrides them per request rather than replacing them.
 
 When the source carries EXIF, its tags are merged into the same object, as OSS
 does — `Make`, `Model`, `DateTime`, `Orientation`, `LensModel`, the GPS block and
-so on. Tags are read from JPEG's `APP1`, PNG's `eXIf` chunk and WebP's `EXIF`
-chunk; an image without EXIF returns exactly the eight fields above.
+so on. Tags come from JPEG's `APP1`, PNG's `eXIf` chunk and WebP's `EXIF` chunk
+directly; for AVIF, HEIC, JXL and TIFF they come from libvips, which hands back
+the same bare TIFF block whatever the container wrapped it in. An image with no
+EXIF returns exactly the eight fields above.
+
+That last part used to be untrue in a way worth spelling out, because it did not
+look like a missing feature. `XResolution`, `YResolution` and `ResolutionUnit`
+are in *every* response, and they are read from EXIF. An AVIF whose EXIF says
+72 dpi therefore did not return "eight fields instead of twenty-five" — it
+returned eight fields of which three said `1/1`, `1/1` and `1`, which is the
+answer for an image carrying no resolution metadata at all. Wrong values, not
+absent ones.
 
 > Two deliberate differences, both about *formatting* rather than which tags
 > appear. Values are rendered from the raw EXIF types — `GPSLatitude` is
@@ -248,6 +258,24 @@ chunk; an image without EXIF returns exactly the eight fields above.
 > pretty-printer and says `"39deg 54' 26.68\""`. And tags with no standard name,
 > along with `UNDEFINED`-typed ones such as `MakerNote`, are skipped rather than
 > emitted as hex blobs.
+
+`info` answers from the first 64 KiB of the file wherever it can — that is the
+point of the endpoint, and it is what makes it far cheaper than fetching the
+image. Three cases cannot be answered that way and fall back to libvips, which
+reads the file whole:
+
+- a container with no header walk here: AVIF, HEIC, JXL, TIFF, BMP;
+- a JPEG whose `SOF` marker sits past 64 KiB — a large EXIF thumbnail plus a
+  segmented ICC profile is enough, and no camera has to do anything unusual to
+  produce one;
+- an animated WebP, or a GIF whose blocks outrun the window, where the geometry
+  is known but the frame count is not. WebP has no frame-count field at all: the
+  frames are `ANMF` chunks, so counting them means walking the file.
+
+Because that fallback reads everything, `ISTORE_MAX_SOURCE_BYTES` applies to it,
+and a source over the limit gets `413` — the same answer a transform of it
+gets. The limit is checked at the read, not at the request, so a large JPEG the
+header walk can answer is still served.
 
 **`average-hue`** — terminal, like `info`, and the response is **plain text**,
 not JSON, because that is what OSS returns:
@@ -466,6 +494,10 @@ internal/timeout/        the one function iStore needed from imgproxy's server p
 - Go 1.24+
 - libvips 8.13+ with, at minimum: libjpeg, libpng, libwebp (8.16+ only if you
   need to *read* animated JPEG XL — see "Not built yet")
+- TIFF loads on any of those. On libvips 8.17 built against libtiff 4.7+ the
+  loader's `unlimited` flag is passed through as configured; on anything older
+  the flag does not exist and libvips keeps its own decode limits, which is the
+  safe direction. Which one you have is logged by `go test ./internal/vips`
 - for `watermark,text_`: libvips built with Pango, plus fonts installed on the
   host — including a CJK face if the text will be Chinese, or Pango renders
   boxes
@@ -491,6 +523,21 @@ apk add --no-cache vips vips-heif vips-jxl font-wqy-zenhei
 with those two codecs as *dynamic modules* in their own packages, so
 `vips-dev` alone gives a libvips that passes startup and then fails the first
 `format,avif` request with "cannot be produced by this build of libvips".
+
+Which formats a build can really encode is settled at startup by encoding a
+32x32 image in each, and logged:
+
+```
+level=INFO msg="encodable formats" formats="[jpg png webp gif avif jxl tiff bmp ico]"
+```
+
+Checking the operation table instead is not good enough, and AVIF is exactly
+where it fails. libvips has one `heifsave`; it hands the pixels to libheif,
+which dispatches to a codec plugin chosen by `compression`. A build with libheif
+and no AV1 encoder — Debian and Ubuntu's default — *has* `heifsave_target`, so
+the table says yes, the request passes validation, and the encode fails deep in
+the pipeline as a `500` with no usable message. The probe costs about 25 ms of
+startup for all ten formats and turns that into a `400` naming the format.
 
 The AVIF encoder, on the other hand, needs nothing extra: Alpine's libheif is
 built against `aom-dev` with no plugin flag, so aomenc is linked in — unlike
@@ -825,11 +872,17 @@ Argument errors, all 400 with an OSS envelope: `image/info,x_1`,
 `image/resize,w_100`, `video/info`.
 
 `go test ./internal/...` covers the grammar, the path resolver, the header
-parsers, the cache evictor, the watermark provider's caching rule and the
-signature. Those packages are pure logic and need no libvips, which is
-deliberate — see the note on `Validate` vs `CheckEncoders` below. The
-pixel-level checks above are not in there: they need a live libvips and a real
-image, and they were run by hand.
+parsers, the cache evictor, the watermark provider's caching rule, the signature
+and the info fallbacks. Most of those packages are pure logic and need no
+libvips, which is deliberate — see the note on `Validate` vs `CheckEncoders`
+below.
+
+`internal/vips` is the exception, and has to be: its tests are claims about the
+library this binary was linked against, and no reading of the source can settle
+them. They check that a TIFF loads, that the argument lookup the TIFF guard
+rests on answers correctly, and that the encoder probe agrees with a real encode
+at a size no encoder treats specially. The pixel-level checks above are still not
+in there: they need real images, and they were run by hand.
 
 CI (`.github/workflows/ci.yml`) builds and runs those tests on Alpine 3.23 with
 `vips-heif` and `vips-jxl` installed, plus a `gofmt` and `go mod tidy` check. A

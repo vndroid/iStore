@@ -26,6 +26,15 @@ int gif_resolution_limit();
 
 int vips_health();
 
+// Reports whether an operation takes an argument of this name. Asks the
+// operation class, so it is true of the library actually linked rather than of
+// the version number it reports.
+gboolean vips_operation_has_argument(const char *nickname, const char *name);
+
+// Reports whether this build's tiffload_source registers the `unlimited`
+// property. Answered once at startup; see vips.c.
+gboolean vips_tiffload_supports_unlimited();
+
 int vips_jpegload_source_go(VipsImgproxySource *source, VipsImage **out, ImgproxyLoadOptions lo);
 int vips_jxlload_source_go(VipsImgproxySource *source, VipsImage **out, ImgproxyLoadOptions lo);
 int vips_pngload_source_go(VipsImgproxySource *source, VipsImage **out, ImgproxyLoadOptions lo);
