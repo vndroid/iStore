@@ -1,8 +1,8 @@
 package processing
 
 import (
-	"github.com/kane/istore/internal/imath"
-	"github.com/kane/istore/internal/vips"
+	"github.com/vndroid/istore/internal/imath"
+	"github.com/vndroid/istore/internal/vips"
 )
 
 func cropImage(img *vips.Image, cropWidth, cropHeight int, gravity *GravityOptions, offsetScale float64) error {

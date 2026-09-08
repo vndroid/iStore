@@ -7,12 +7,12 @@ import (
 	"runtime"
 	"slices"
 
-	"github.com/kane/istore/internal/imagedata"
-	"github.com/kane/istore/internal/imageinfo"
-	"github.com/kane/istore/internal/imagetype"
-	"github.com/kane/istore/internal/options"
-	"github.com/kane/istore/internal/timeout"
-	"github.com/kane/istore/internal/vips"
+	"github.com/vndroid/istore/internal/imagedata"
+	"github.com/vndroid/istore/internal/imageinfo"
+	"github.com/vndroid/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/options"
+	"github.com/vndroid/istore/internal/timeout"
+	"github.com/vndroid/istore/internal/vips"
 )
 
 // mainPipeline constructs the main image processing pipeline.

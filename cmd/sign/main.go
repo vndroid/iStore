@@ -19,8 +19,8 @@ import (
 	"net/url"
 	"os"
 
-	"github.com/kane/istore/internal/httpserver"
-	"github.com/kane/istore/internal/security"
+	"github.com/vndroid/istore/internal/httpserver"
+	"github.com/vndroid/istore/internal/security"
 )
 
 func main() {

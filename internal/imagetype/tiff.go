@@ -1,7 +1,7 @@
 package imagetype
 
 import (
-	"github.com/kane/istore/internal/bufreader"
+	"github.com/vndroid/istore/internal/bufreader"
 )
 
 var (

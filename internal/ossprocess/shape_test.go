@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/kane/istore/internal/options/keys"
+	"github.com/vndroid/istore/internal/options/keys"
 )
 
 func TestCircleAndRoundedCorners(t *testing.T) {

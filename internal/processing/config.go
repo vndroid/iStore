@@ -4,10 +4,10 @@ import (
 	"errors"
 	"maps"
 
-	"github.com/kane/istore/internal/ensure"
-	"github.com/kane/istore/internal/env"
-	"github.com/kane/istore/internal/imagetype"
-	"github.com/kane/istore/internal/vips"
+	"github.com/vndroid/istore/internal/ensure"
+	"github.com/vndroid/istore/internal/env"
+	"github.com/vndroid/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/vips"
 )
 
 var (

@@ -1,8 +1,8 @@
 package auximageprovider
 
 import (
-	"github.com/kane/istore/internal/ensure"
-	"github.com/kane/istore/internal/env"
+	"github.com/vndroid/istore/internal/ensure"
+	"github.com/vndroid/istore/internal/env"
 )
 
 var (

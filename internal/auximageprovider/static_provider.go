@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/kane/istore/internal/imagedata"
-	"github.com/kane/istore/internal/options"
+	"github.com/vndroid/istore/internal/imagedata"
+	"github.com/vndroid/istore/internal/options"
 )
 
 // staticProvider is a simple implementation of ImageProvider, which returns

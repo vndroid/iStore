@@ -11,12 +11,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kane/istore/internal/imagedata"
-	"github.com/kane/istore/internal/imagetype"
-	"github.com/kane/istore/internal/options"
-	"github.com/kane/istore/internal/options/keys"
-	"github.com/kane/istore/internal/security"
-	"github.com/kane/istore/internal/vips"
+	"github.com/vndroid/istore/internal/imagedata"
+	"github.com/vndroid/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/options"
+	"github.com/vndroid/istore/internal/options/keys"
+	"github.com/vndroid/istore/internal/security"
+	"github.com/vndroid/istore/internal/vips"
 )
 
 // The pipeline cannot be tested without libvips, so this package's tests bring

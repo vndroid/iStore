@@ -3,7 +3,7 @@ package processing
 import (
 	"math"
 
-	"github.com/kane/istore/internal/imath"
+	"github.com/vndroid/istore/internal/imath"
 )
 
 func calcPosition(

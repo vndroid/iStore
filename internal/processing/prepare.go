@@ -3,8 +3,8 @@ package processing
 import (
 	"math"
 
-	"github.com/kane/istore/internal/imath"
-	"github.com/kane/istore/internal/vips"
+	"github.com/vndroid/istore/internal/imath"
+	"github.com/vndroid/istore/internal/vips"
 )
 
 // ExtractGeometry extracts image width, height, orientation angle and flip flag from the image metadata.

@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kane/istore/internal/options"
-	"github.com/kane/istore/internal/ossprocess"
-	"github.com/kane/istore/internal/source"
+	"github.com/vndroid/istore/internal/options"
+	"github.com/vndroid/istore/internal/ossprocess"
+	"github.com/vndroid/istore/internal/source"
 )
 
 // newTestProvider returns a provider over a temp root holding one 4x4 PNG named

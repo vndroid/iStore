@@ -3,7 +3,7 @@ package color
 import (
 	"fmt"
 
-	"github.com/kane/istore/internal/errctx"
+	"github.com/vndroid/istore/internal/errctx"
 )
 
 type ColorError struct{ *errctx.TextError }

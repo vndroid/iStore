@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/kane/istore/internal/env"
+	"github.com/vndroid/istore/internal/env"
 )
 
 type GravityType int

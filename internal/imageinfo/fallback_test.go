@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/kane/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/imagetype"
 )
 
 // jpegWithFatSegments returns a JPEG with n padding segments spliced in after

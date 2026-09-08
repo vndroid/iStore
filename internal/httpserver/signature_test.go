@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/kane/istore/internal/auximageprovider"
-	"github.com/kane/istore/internal/processing"
-	"github.com/kane/istore/internal/security"
+	"github.com/vndroid/istore/internal/auximageprovider"
+	"github.com/vndroid/istore/internal/processing"
+	"github.com/vndroid/istore/internal/security"
 )
 
 func TestSignedMessage(t *testing.T) {

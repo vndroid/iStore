@@ -3,9 +3,9 @@ package processing
 import (
 	"context"
 
-	"github.com/kane/istore/internal/imagedata"
-	"github.com/kane/istore/internal/timeout"
-	"github.com/kane/istore/internal/vips"
+	"github.com/vndroid/istore/internal/imagedata"
+	"github.com/vndroid/istore/internal/timeout"
+	"github.com/vndroid/istore/internal/vips"
 )
 
 type Context struct {

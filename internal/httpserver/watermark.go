@@ -7,13 +7,13 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/kane/istore/internal/imagedata"
-	"github.com/kane/istore/internal/imagetype"
-	"github.com/kane/istore/internal/options"
-	"github.com/kane/istore/internal/ossprocess"
-	"github.com/kane/istore/internal/source"
-	"github.com/kane/istore/internal/vips"
-	"github.com/kane/istore/internal/vips/color"
+	"github.com/vndroid/istore/internal/imagedata"
+	"github.com/vndroid/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/options"
+	"github.com/vndroid/istore/internal/ossprocess"
+	"github.com/vndroid/istore/internal/source"
+	"github.com/vndroid/istore/internal/vips"
+	"github.com/vndroid/istore/internal/vips/color"
 )
 
 // watermarkProvider supplies the watermark image the pipeline composites.

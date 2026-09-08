@@ -1,8 +1,8 @@
 package security
 
 import (
-	"github.com/kane/istore/internal/options"
-	"github.com/kane/istore/internal/options/keys"
+	"github.com/vndroid/istore/internal/options"
+	"github.com/vndroid/istore/internal/options/keys"
 )
 
 // Checker represents the security package instance

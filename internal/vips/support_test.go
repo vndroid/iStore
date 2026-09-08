@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/kane/istore/internal/imagedata"
-	"github.com/kane/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/imagedata"
+	"github.com/vndroid/istore/internal/imagetype"
 )
 
 // These tests need a live libvips, which is the point of them: everything here

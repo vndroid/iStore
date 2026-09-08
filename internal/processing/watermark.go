@@ -4,11 +4,11 @@ import (
 	"context"
 	"math"
 
-	"github.com/kane/istore/internal/imagedata"
-	"github.com/kane/istore/internal/imath"
-	"github.com/kane/istore/internal/options"
-	"github.com/kane/istore/internal/options/keys"
-	"github.com/kane/istore/internal/vips"
+	"github.com/vndroid/istore/internal/imagedata"
+	"github.com/vndroid/istore/internal/imath"
+	"github.com/vndroid/istore/internal/options"
+	"github.com/vndroid/istore/internal/options/keys"
+	"github.com/vndroid/istore/internal/vips"
 )
 
 // watermarkPipeline constructs the watermark processing pipeline.

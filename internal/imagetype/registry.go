@@ -5,7 +5,7 @@ import (
 	"io"
 	"slices"
 
-	"github.com/kane/istore/internal/bufreader"
+	"github.com/vndroid/istore/internal/bufreader"
 )
 
 const (

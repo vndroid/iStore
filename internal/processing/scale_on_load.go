@@ -4,9 +4,9 @@ import (
 	"log/slog"
 	"math"
 
-	"github.com/kane/istore/internal/imagetype"
-	"github.com/kane/istore/internal/imath"
-	"github.com/kane/istore/internal/vips"
+	"github.com/vndroid/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/imath"
+	"github.com/vndroid/istore/internal/vips"
 )
 
 func (p *Processor) canScaleOnLoad(c *Context, shrink float64) bool {

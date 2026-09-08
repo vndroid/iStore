@@ -1,8 +1,8 @@
 package processing
 
 import (
-	"github.com/kane/istore/internal/auximageprovider"
-	"github.com/kane/istore/internal/security"
+	"github.com/vndroid/istore/internal/auximageprovider"
+	"github.com/vndroid/istore/internal/security"
 )
 
 // Processor is responsible for processing images according to the given configuration.

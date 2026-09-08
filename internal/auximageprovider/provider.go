@@ -7,8 +7,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/kane/istore/internal/imagedata"
-	"github.com/kane/istore/internal/options"
+	"github.com/vndroid/istore/internal/imagedata"
+	"github.com/vndroid/istore/internal/options"
 )
 
 // Provider is an interface that provides image data and headers based

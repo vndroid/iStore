@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"regexp"
 
-	"github.com/kane/istore/internal/errctx"
+	"github.com/vndroid/istore/internal/errctx"
 )
 
 var badImageErrRe = []*regexp.Regexp{

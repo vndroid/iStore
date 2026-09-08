@@ -1,7 +1,7 @@
 package processing
 
 import (
-	"github.com/kane/istore/internal/vips"
+	"github.com/vndroid/istore/internal/vips"
 )
 
 func (p *Processor) colorspaceToProcessing(c *Context) error {

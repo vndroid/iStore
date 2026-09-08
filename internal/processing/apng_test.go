@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kane/istore/internal/imagedata"
-	"github.com/kane/istore/internal/imagetype"
-	"github.com/kane/istore/internal/options"
-	"github.com/kane/istore/internal/options/keys"
-	"github.com/kane/istore/internal/vips"
+	"github.com/vndroid/istore/internal/imagedata"
+	"github.com/vndroid/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/options"
+	"github.com/vndroid/istore/internal/options/keys"
+	"github.com/vndroid/istore/internal/vips"
 )
 
 // tinyAPNG is an 8x8 three-frame APNG, 280 bytes. It is committed as base64

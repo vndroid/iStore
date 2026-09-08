@@ -29,10 +29,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kane/istore/internal/imagetype"
-	"github.com/kane/istore/internal/options"
-	"github.com/kane/istore/internal/options/keys"
-	"github.com/kane/istore/internal/vips"
+	"github.com/vndroid/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/options"
+	"github.com/vndroid/istore/internal/options/keys"
+	"github.com/vndroid/istore/internal/vips"
 )
 
 // QueryKey is the query-string parameter carrying the process chain.

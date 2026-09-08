@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/kane/istore/internal/imageinfo"
+	"github.com/vndroid/istore/internal/imageinfo"
 )
 
 func main() {

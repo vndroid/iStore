@@ -4,7 +4,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/kane/istore/internal/ioutil"
+	"github.com/vndroid/istore/internal/ioutil"
 )
 
 // ReadPeeker is an interface that combines io.Reader and a method to peek at the next n bytes

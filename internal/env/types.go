@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kane/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/imagetype"
 )
 
 type StringVar = Desc[string]

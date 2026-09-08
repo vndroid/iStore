@@ -3,7 +3,7 @@ package imagetype
 import (
 	"net/http"
 
-	"github.com/kane/istore/internal/errctx"
+	"github.com/vndroid/istore/internal/errctx"
 )
 
 type (

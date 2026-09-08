@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kane/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/imagetype"
 )
 
 // URLReplacement represents a URL replacement configuration

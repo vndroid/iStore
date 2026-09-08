@@ -20,14 +20,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kane/istore/internal/auximageprovider"
-	"github.com/kane/istore/internal/cache"
-	"github.com/kane/istore/internal/httpserver"
-	"github.com/kane/istore/internal/imagetype"
-	"github.com/kane/istore/internal/ossprocess"
-	"github.com/kane/istore/internal/processing"
-	"github.com/kane/istore/internal/security"
-	"github.com/kane/istore/internal/vips"
+	"github.com/vndroid/istore/internal/auximageprovider"
+	"github.com/vndroid/istore/internal/cache"
+	"github.com/vndroid/istore/internal/httpserver"
+	"github.com/vndroid/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/ossprocess"
+	"github.com/vndroid/istore/internal/processing"
+	"github.com/vndroid/istore/internal/security"
+	"github.com/vndroid/istore/internal/vips"
 )
 
 func main() {

@@ -5,9 +5,9 @@ import (
 
 	"github.com/trimmer-io/go-xmp/xmp"
 
-	"github.com/kane/istore/internal/imagemeta/iptc"
-	"github.com/kane/istore/internal/imagemeta/photoshop"
-	"github.com/kane/istore/internal/vips"
+	"github.com/vndroid/istore/internal/imagemeta/iptc"
+	"github.com/vndroid/istore/internal/imagemeta/photoshop"
+	"github.com/vndroid/istore/internal/vips"
 )
 
 func stripPS3(img *vips.Image) []byte {

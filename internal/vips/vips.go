@@ -20,9 +20,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/kane/istore/internal/imagedata"
-	"github.com/kane/istore/internal/imagetype"
-	"github.com/kane/istore/internal/vips/color"
+	"github.com/vndroid/istore/internal/imagedata"
+	"github.com/vndroid/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/vips/color"
 )
 
 type Image struct {

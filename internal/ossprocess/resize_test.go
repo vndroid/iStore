@@ -3,7 +3,7 @@ package ossprocess
 import (
 	"testing"
 
-	"github.com/kane/istore/internal/processing"
+	"github.com/vndroid/istore/internal/processing"
 )
 
 // resolve is a helper: parse one resize action and resolve it against a source.

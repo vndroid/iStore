@@ -10,7 +10,7 @@ import (
 	"image/png"
 	"testing"
 
-	"github.com/kane/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/imagetype"
 )
 
 // Test images are generated rather than committed, so the expected dimensions

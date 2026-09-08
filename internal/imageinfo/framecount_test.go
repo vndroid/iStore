@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/kane/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/imagetype"
 )
 
 // FrameCountKnown is the contract between this package and the HTTP layer: false

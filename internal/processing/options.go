@@ -3,12 +3,12 @@ package processing
 import (
 	"slices"
 
-	"github.com/kane/istore/internal/imagetype"
-	"github.com/kane/istore/internal/options"
-	"github.com/kane/istore/internal/options/keys"
-	"github.com/kane/istore/internal/security"
-	"github.com/kane/istore/internal/vips"
-	"github.com/kane/istore/internal/vips/color"
+	"github.com/vndroid/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/options"
+	"github.com/vndroid/istore/internal/options/keys"
+	"github.com/vndroid/istore/internal/security"
+	"github.com/vndroid/istore/internal/vips"
+	"github.com/vndroid/istore/internal/vips/color"
 )
 
 // ProcessingOptions is a thin wrapper around options.Options that provides

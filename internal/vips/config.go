@@ -9,7 +9,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/kane/istore/internal/ensure"
+	"github.com/vndroid/istore/internal/ensure"
 )
 
 // Config mirrors imgproxy's vips.Config field for field, so the C-side option

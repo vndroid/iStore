@@ -5,10 +5,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kane/istore/internal/options"
-	"github.com/kane/istore/internal/options/keys"
-	"github.com/kane/istore/internal/processing"
-	"github.com/kane/istore/internal/vips/color"
+	"github.com/vndroid/istore/internal/options"
+	"github.com/vndroid/istore/internal/options/keys"
+	"github.com/vndroid/istore/internal/processing"
+	"github.com/vndroid/istore/internal/vips/color"
 )
 
 // ResizeMode is OSS's `m_` parameter.

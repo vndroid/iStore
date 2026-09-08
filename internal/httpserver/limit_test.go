@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kane/istore/internal/auximageprovider"
-	"github.com/kane/istore/internal/processing"
+	"github.com/vndroid/istore/internal/auximageprovider"
+	"github.com/vndroid/istore/internal/processing"
 )
 
 func TestTooLarge(t *testing.T) {

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/kane/istore/internal/errctx"
-	"github.com/kane/istore/internal/imagetype"
+	"github.com/vndroid/istore/internal/errctx"
+	"github.com/vndroid/istore/internal/imagetype"
 )
 
 type (

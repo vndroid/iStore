@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kane/istore/internal/options"
-	"github.com/kane/istore/internal/options/keys"
-	"github.com/kane/istore/internal/processing"
+	"github.com/vndroid/istore/internal/options"
+	"github.com/vndroid/istore/internal/options/keys"
+	"github.com/vndroid/istore/internal/processing"
 )
 
 // ossGravities maps OSS's `g_` anchor names onto the pipeline's gravity types.

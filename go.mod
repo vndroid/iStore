@@ -1,4 +1,4 @@
-module github.com/kane/istore
+module github.com/vndroid/istore
 
 go 1.24
 
