@@ -60,8 +60,8 @@ func textOptions(text string) *options.Options {
 }
 
 func (p *watermarkProvider) size() int {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	return len(p.loaded)
 }
 

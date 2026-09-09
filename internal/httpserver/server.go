@@ -355,8 +355,25 @@ func (s *Server) failSignature(w http.ResponseWriter, r *http.Request, err error
 
 // ------------------------------------------------------------------ original
 
+// sniffBytes is how much of an object is needed to identify its format. The
+// same window net/http's own sniffer uses.
+const sniffBytes = 512
+
 func (s *Server) serveOriginal(w http.ResponseWriter, r *http.Request) {
-	obj, err := s.src.Open(r.Context(), r.URL.Path)
+	head := r.Method == http.MethodHead
+
+	// A HEAD needs the type and the length, not the object. Asking the source
+	// for a header window rather than the whole thing turns what was a full
+	// origin fetch — every byte of a 40 MB JPEG requested and then discarded —
+	// into a 512-byte ranged response, while still identifying the format from
+	// the bytes rather than on the origin's word.
+	var obj *source.Object
+	var err error
+	if head {
+		obj, err = s.src.OpenHeader(r.Context(), r.URL.Path, sniffBytes)
+	} else {
+		obj, err = s.src.Open(r.Context(), r.URL.Path)
+	}
 	if err != nil {
 		s.failSource(w, r, err)
 		return
@@ -366,8 +383,8 @@ func (s *Server) serveOriginal(w http.ResponseWriter, r *http.Request) {
 	// Sniffed, not taken from the origin's Content-Type: an origin that labels a
 	// JPEG as application/octet-stream is common, and the bytes are authoritative
 	// either way. Peek leaves them in place for the copy below.
-	if head, perr := obj.Peek(512); perr == nil {
-		if t, terr := imagetype.Detect(bytes.NewReader(head), "", ""); terr == nil {
+	if b, perr := obj.Peek(sniffBytes); perr == nil {
+		if t, terr := imagetype.Detect(bytes.NewReader(b), "", ""); terr == nil {
 			w.Header().Set("Content-Type", t.Mime())
 		}
 	}
@@ -378,7 +395,7 @@ func (s *Server) serveOriginal(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Length", strconv.FormatInt(obj.Size, 10))
 	}
 	w.Header().Set("Cache-Control", s.cfg.CacheControl)
-	if r.Method == http.MethodHead {
+	if head {
 		return
 	}
 	if _, err := obj.WriteTo(w); err != nil {

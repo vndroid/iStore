@@ -242,7 +242,7 @@ func (u *Upstream) do(ctx context.Context, method string, t *url.URL, rangeHdr s
 	req, err := http.NewRequestWithContext(ctx, method, t.String(), nil)
 	if err != nil {
 		cancel()
-		return nil, &UpstreamError{URL: t.String(), status: http.StatusBadGateway, Err: err}
+		return nil, &UpstreamError{URL: redacted(t), status: http.StatusBadGateway, Err: err}
 	}
 	req.Header.Set("User-Agent", "istore")
 	req.Header.Set("Accept", "*/*")
@@ -259,7 +259,13 @@ func (u *Upstream) do(ctx context.Context, method string, t *url.URL, rangeHdr s
 	// The timeout has to outlive this function: it bounds the body read too, and
 	// cancelling here would cut the transfer off mid-object. Closing the body
 	// releases it.
-	resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
+	//
+	// The wrapper also classifies read errors. Without it the fetch timeout is
+	// only enforced in spirit past the response headers: the deadline still
+	// fires, but the error surfaces from io.ReadAll as a bare
+	// context.DeadlineExceeded that the HTTP layer cannot tell from any other
+	// read failure, and a stalled origin comes back as 500 rather than 504.
+	resp.Body = &upstreamBody{rc: resp.Body, url: redacted(t), cancel: cancel}
 
 	if err := statusError(t, resp); err != nil {
 		drainClose(resp.Body)
@@ -288,34 +294,60 @@ func statusError(t *url.URL, resp *http.Response) error {
 		// Redirects are not followed, so a 3xx is "the origin did not give us
 		// the object". Passing it through would be worse than a 502: the client
 		// would follow it and fetch the unprocessed original.
-		return &UpstreamError{URL: t.String(), Status: code, status: http.StatusBadGateway,
+		return &UpstreamError{URL: redacted(t), Status: code, status: http.StatusBadGateway,
 			Err: fmt.Errorf("origin redirected to %q and redirects are not followed",
 				resp.Header.Get("Location"))}
 
 	case code >= 200 && code < 300:
 		// 204, 202 and friends: a success with nothing to process.
-		return &UpstreamError{URL: t.String(), Status: code, status: http.StatusBadGateway,
+		return &UpstreamError{URL: redacted(t), Status: code, status: http.StatusBadGateway,
 			Err: fmt.Errorf("origin returned %d with no object", code)}
 
 	default:
 		// 4xx and 5xx go back to the client as the origin sent them.
-		return &UpstreamError{URL: t.String(), Status: code, status: code,
+		return &UpstreamError{URL: redacted(t), Status: code, status: code,
 			Err: fmt.Errorf("origin returned %d", code)}
 	}
 }
 
 func transportError(t *url.URL, err error) error {
-	status := http.StatusBadGateway
-	if errors.Is(err, context.DeadlineExceeded) || isTimeout(err) {
-		status = http.StatusGatewayTimeout
+	return &UpstreamError{URL: redacted(t), status: gatewayStatus(err), Err: err}
+}
+
+// bodyError classifies a failure that happened while reading the response body,
+// so that a timeout there is answered the same way a timeout on the headers is.
+//
+// A truncated object — the origin hanging up short of its own Content-Length —
+// lands here too, as io.ErrUnexpectedEOF, and becomes a 502: iStore did not get
+// the object, and that is the origin's fault rather than an internal error.
+func bodyError(url string, err error) error {
+	// A second Read after a failed one returns the already-classified error.
+	var ue *UpstreamError
+	if errors.As(err, &ue) {
+		return err
 	}
-	return &UpstreamError{URL: t.String(), status: status, Err: err}
+	return &UpstreamError{URL: url, status: gatewayStatus(err), Err: err}
+}
+
+func gatewayStatus(err error) int {
+	if errors.Is(err, context.DeadlineExceeded) || isTimeout(err) {
+		return http.StatusGatewayTimeout
+	}
+	return http.StatusBadGateway
 }
 
 func isTimeout(err error) bool {
 	var ne net.Error
 	return errors.As(err, &ne) && ne.Timeout()
 }
+
+// redacted renders a URL for the log with any password replaced.
+//
+// UpstreamError.URL exists to be logged, and ISTORE_UPSTREAM may legitimately
+// carry credentials for the origin. net/http already redacts the URL it puts in
+// its own *url.Error; this is the same courtesy for the copy iStore keeps, and
+// it is the only place iStore prints the target URL at all.
+func redacted(t *url.URL) string { return t.Redacted() }
 
 // UpstreamError is a fetch the origin did not satisfy.
 //
@@ -373,7 +405,11 @@ func infoFrom(t *url.URL, resp *http.Response) Info {
 		}
 	}
 	return Info{
-		Key:     t.String(),
+		// Redacted, like every other copy of the target this package keeps. It
+		// only ever goes into a cache key, which is hashed, so nothing leaks
+		// today — but it also means rotating the origin's password does not
+		// throw the whole cache away, which is the better behaviour anyway.
+		Key:     redacted(t),
 		Size:    size,
 		Version: version(resp),
 	}
@@ -430,15 +466,27 @@ func drainClose(rc io.ReadCloser) {
 	rc.Close()
 }
 
-// cancelOnClose ties a request context's cancel to the body's Close, so the
-// fetch timeout covers the body read without cutting it short.
-type cancelOnClose struct {
-	io.ReadCloser
+// upstreamBody is the response body with two jobs bolted on: it ties the fetch
+// timeout's cancel to Close, so the deadline covers the body read without
+// cutting it short, and it classifies read failures so that everything above
+// this package sees one error type whether the fetch died on the headers or
+// halfway through the object.
+type upstreamBody struct {
+	rc     io.ReadCloser
+	url    string // already redacted
 	cancel context.CancelFunc
 }
 
-func (c *cancelOnClose) Close() error {
-	err := c.ReadCloser.Close()
-	c.cancel()
+func (b *upstreamBody) Read(p []byte) (int, error) {
+	n, err := b.rc.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return n, bodyError(b.url, err)
+	}
+	return n, err
+}
+
+func (b *upstreamBody) Close() error {
+	err := b.rc.Close()
+	b.cancel()
 	return err
 }

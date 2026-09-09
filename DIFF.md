@@ -163,7 +163,9 @@ about iStore against itself, not about OSS.
 | Origin returns 3xx | — | `502`. Redirects are not followed — doing so would hand the choice of destination back to the origin, and passing the 3xx to the client would send it to fetch the unprocessed original |
 | Origin unreachable / times out | — | `502` / `504`. The fetch has its own budget, `ISTORE_UPSTREAM_TIMEOUT_MS` (10 s), separate from `ISTORE_PROCESS_TIMEOUT_MS` |
 | Client `Range` requests | Not supported | Not supported. iStore's own request to the origin is ranged; a client asking iStore for a range still gets the whole object |
-| Watermark objects | Read from the root, cached in memory for the process's life | Fetched from the origin, cached for `ISTORE_UPSTREAM_TTL_SEC` |
+| Watermark objects | Read from the root, cached in memory for the process's life | Fetched from the origin, cached for `ISTORE_UPSTREAM_TTL_SEC`. Either way the cache holds at most 64 decoded watermarks, least-recently-used first out |
+| A `HEAD` of the untouched source | Opens the file, reads nothing | One ranged request for 512 bytes — enough to sniff the format; the length comes from `Content-Range` |
+| Origin stalls or hangs up mid-object | — | `504` / `502`, the same as a failure on the response headers. A `GET` already streaming when that happens ends as a truncated response, which is what any proxy does once the headers are out |
 
 The error bodies never name the origin or repeat what it said. Which internal
 host iStore talks to is not the client's business; the operator gets the URL and

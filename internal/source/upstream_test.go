@@ -473,3 +473,134 @@ func TestDescribeRedactsCredentials(t *testing.T) {
 		t.Errorf("Describe() = %q, which leaks the password into the log", u.Describe())
 	}
 }
+
+// ----------------------------------------------------------------- redaction
+
+// UpstreamError.URL exists to be logged, and ISTORE_UPSTREAM may carry
+// credentials for the origin. net/http redacts the URL in its own *url.Error;
+// the copy iStore keeps has to do the same, or the password lands in a WARN
+// line on every failed fetch.
+func TestUpstreamErrorRedactsCredentials(t *testing.T) {
+	t.Run("transport error", func(t *testing.T) {
+		u, err := NewUpstream("http://alice:hunter2@127.0.0.1:1", time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = u.Open(context.Background(), "/x.bin")
+		assertNoSecret(t, err)
+	})
+
+	t.Run("status error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer srv.Close()
+
+		u, err := NewUpstream(strings.Replace(srv.URL, "http://", "http://alice:hunter2@", 1), time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = u.Open(context.Background(), "/x.bin")
+		assertNoSecret(t, err)
+	})
+
+	t.Run("cache key", func(t *testing.T) {
+		srv := httptest.NewServer(rangeServer(body, `"v1"`))
+		defer srv.Close()
+
+		u, err := NewUpstream(strings.Replace(srv.URL, "http://", "http://alice:hunter2@", 1), time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := u.Stat(context.Background(), "/x.bin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(info.Key, "hunter2") {
+			t.Errorf("Info.Key = %q, which carries the password", info.Key)
+		}
+	})
+}
+
+func assertNoSecret(t *testing.T, err error) {
+	t.Helper()
+
+	var ue *UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("got %v, want an *UpstreamError", err)
+	}
+	if strings.Contains(ue.URL, "hunter2") {
+		t.Errorf("UpstreamError.URL = %q, which carries the password", ue.URL)
+	}
+	if strings.Contains(ue.Error(), "hunter2") {
+		t.Errorf("Error() = %q, which carries the password", ue.Error())
+	}
+	if strings.Contains(ue.PublicMessage(), "hunter2") {
+		t.Errorf("PublicMessage() carries the password")
+	}
+	// The username is kept: it is what makes a redacted URL useful in a log.
+	if !strings.Contains(ue.URL, "alice") {
+		t.Errorf("UpstreamError.URL = %q, want the username kept", ue.URL)
+	}
+}
+
+// -------------------------------------------------------- body-phase failures
+
+// The fetch timeout has to mean the same thing after the response headers as
+// before them. It fires either way; what was missing is the classification, so
+// a stalled body surfaced as an unrecognised read error rather than a 504.
+func TestBodyReadTimeoutIsAnUpstreamError(t *testing.T) {
+	u, _ := newUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100000")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "start")
+		w.(http.Flusher).Flush()
+		time.Sleep(2 * time.Second)
+	}))
+	u.timeout = 200 * time.Millisecond
+
+	obj, err := u.Open(context.Background(), "/x.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer obj.Close()
+
+	_, err = obj.ReadAll(0)
+	var ue *UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("got %v (%T), want an *UpstreamError", err, err)
+	}
+	if ue.StatusCode() != http.StatusGatewayTimeout {
+		t.Errorf("StatusCode() = %d, want 504", ue.StatusCode())
+	}
+}
+
+// An origin that hangs up short of its own Content-Length did not give us the
+// object. That is a gateway failure, not an internal one.
+func TestTruncatedBodyIsAnUpstreamError(t *testing.T) {
+	u, _ := newUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "100000")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, body)
+		if hj, ok := w.(http.Hijacker); ok {
+			if conn, _, err := hj.Hijack(); err == nil {
+				conn.Close()
+			}
+		}
+	}))
+
+	obj, err := u.Open(context.Background(), "/x.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer obj.Close()
+
+	_, err = obj.ReadAll(0)
+	var ue *UpstreamError
+	if !errors.As(err, &ue) {
+		t.Fatalf("got %v (%T), want an *UpstreamError", err, err)
+	}
+	if ue.StatusCode() != http.StatusBadGateway {
+		t.Errorf("StatusCode() = %d, want 502", ue.StatusCode())
+	}
+}

@@ -85,8 +85,10 @@ takes the place of the size and mtime a local stat provides. An origin that
 sends neither leaves nothing to key on, so the key carries a time bucket instead
 — that is `ISTORE_UPSTREAM_TTL_SEC`, and it is why a replaced object turns over
 within five minutes by default rather than never. Give the origin an `ETag` and
-the TTL stops mattering. The same TTL bounds the in-memory watermark map, which
-has no validator of its own.
+the TTL stops mattering. The same TTL ages the in-memory watermark map, which
+has no validator of its own; its *size* is bounded separately, by a fixed cap on
+the number of decoded watermarks held — a TTL alone would not do it, since an
+entry is only replaced when its own key is asked for again.
 
 **Signing matters more here.** Unsigned local mode exposes a directory. Unsigned
 upstream mode lets anyone who can reach the port drive arbitrary transform
@@ -103,6 +105,7 @@ Round trips per request, so the cost is not a surprise:
 | transform, cache miss | 2 (`HEAD` + `GET`) |
 | 12 concurrent identical transforms, cold | 12 `HEAD` + 1 `GET` — the encode is coalesced |
 | the source untouched | 1 |
+| `HEAD` of the source untouched | 1 (ranged — the type is sniffed from 512 bytes, the length comes from `Content-Range`) |
 
 `HEAD` is used for the identity check; an origin that answers `405` or `501` to
 it gets a one-byte ranged `GET` instead.
@@ -452,7 +455,7 @@ unchanged:
 | `ISTORE_ROOT` | *(one of these two is required)* | directory images are served from |
 | `ISTORE_UPSTREAM` | *(one of these two is required)* | base URL images are fetched from, e.g. `http://localhost:3030` |
 | `ISTORE_UPSTREAM_TIMEOUT_MS` | `10000` | bounds one fetch, separately from the processing deadline |
-| `ISTORE_UPSTREAM_TTL_SEC` | `300` | how long upstream content is reused when the origin sends no `ETag` or `Last-Modified`; also bounds the watermark map |
+| `ISTORE_UPSTREAM_TTL_SEC` | `300` | how long upstream content is reused when the origin sends no `ETag` or `Last-Modified`; also how long a cached watermark is trusted |
 | `ISTORE_UPSTREAM_INFO_MAX_BYTES` | `10485760` | bounds `info`'s whole-object fallback; the ranged path is unaffected |
 | `ISTORE_CACHE_DIR` | *(unset — no cache)* | where transcoded results are stored |
 | `ISTORE_BIND` | `:8080` | listen address |

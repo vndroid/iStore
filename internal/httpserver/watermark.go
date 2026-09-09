@@ -34,13 +34,9 @@ type watermarkProvider struct {
 	maxBytes int64
 
 	// Image watermarks repeat across requests far more than sources do — a site
-	// usually has one — so they are held in memory after the first read. The map
-	// is keyed by the object path and cannot grow without bound, which is safe
-	// precisely because that key is a path: the number of distinct entries is
-	// bounded by the number of objects the source has, the same bound the disk
-	// cache already lives with.
-	//
-	// Nothing built from `text_` goes in here. See cacheable.
+	// usually has one — so they are held in memory after the first read, keyed
+	// by the object path. Nothing built from `text_` goes in here: see
+	// cacheable.
 	//
 	// ttl is zero for a local source, whose entries never expire: a watermark
 	// read off disk is as current as the disk. For an upstream source it is not
@@ -48,16 +44,30 @@ type watermarkProvider struct {
 	// decoded image, not an HTTP response — so entries carry a deadline and are
 	// rebuilt past it. Without that, replacing the watermark at the origin would
 	// not take effect until iStore restarted.
+	//
+	// The size bound is separate from the TTL and does not follow from it; see
+	// evictLocked. One plain Mutex rather than an RWMutex because every hit now
+	// takes a reference, which is a write to the refcount and to the entry's
+	// last-used time, and because at this size the critical section is a map
+	// lookup either way.
 	ttl time.Duration
 
-	mu     sync.RWMutex
+	mu     sync.Mutex
 	loaded map[string]*cachedWatermark
 }
+
+// maxWatermarks bounds the number of decoded watermark images held in memory.
+//
+// A deployment has one watermark, or a handful. 64 is far above any real use
+// and far below anything that costs real memory, which is what a cap should be:
+// invisible in normal operation, and a hard stop on the pathological case.
+const maxWatermarks = 64
 
 // cachedWatermark is one memoised watermark image. A zero expiry never expires.
 type cachedWatermark struct {
 	data    imagedata.ImageData
 	expires time.Time
+	used    time.Time
 }
 
 func (c *cachedWatermark) stale(now time.Time) bool {
@@ -146,12 +156,8 @@ func (p *watermarkProvider) Get(ctx context.Context, o *options.Options) (imaged
 	key := spec.cacheKey()
 	now := time.Now()
 
-	p.mu.RLock()
-	c, ok := p.loaded[key]
-	p.mu.RUnlock()
-	if ok && !c.stale(now) {
-		// Ref so the caller's Close does not release the cached copy.
-		return c.data.Ref(), make(http.Header), nil
+	if d := p.hit(key, now); d != nil {
+		return d, make(http.Header), nil
 	}
 
 	d, err := p.build(ctx, spec)
@@ -159,29 +165,91 @@ func (p *watermarkProvider) Get(ctx context.Context, o *options.Options) (imaged
 		return nil, nil, err
 	}
 
-	entry := &cachedWatermark{data: d}
+	return p.store(key, d, now), make(http.Header), nil
+}
+
+// hit returns a new reference to the cached image, or nil.
+//
+// Taking the reference *inside* the lock is the whole point of the method. The
+// obvious shape — read the entry under a read lock, release it, then Ref — has
+// a window between the two in which an expiry can drop the map's reference to
+// zero and free the image, and Ref on a freed ImageData panics. It is not a
+// data race, so -race never sees it: the refcount is atomic and the map is
+// locked. It is a use-after-free reached through correctly synchronised code,
+// and the only fix is to make "still fresh" and "now referenced" one step.
+func (p *watermarkProvider) hit(key string, now time.Time) imagedata.ImageData {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	c, ok := p.loaded[key]
+	if !ok || c.stale(now) {
+		return nil
+	}
+	c.used = now
+	return c.data.Ref()
+}
+
+// store installs d in the cache and returns the caller's own reference.
+func (p *watermarkProvider) store(key string, d imagedata.ImageData, now time.Time) imagedata.ImageData {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Another request may have built the same image while this one was working.
+	// Keep whichever landed first so there is exactly one cached instance —
+	// unless it has expired since, in which case this fresher one replaces it.
+	if existing, ok := p.loaded[key]; ok {
+		if !existing.stale(now) {
+			existing.used = now
+			d.Close()
+			return existing.data.Ref()
+		}
+		existing.data.Close()
+		delete(p.loaded, key)
+	}
+
+	p.evictLocked(now)
+
+	entry := &cachedWatermark{data: d, used: now}
 	if p.ttl > 0 {
 		entry.expires = now.Add(p.ttl)
 	}
-
-	p.mu.Lock()
-	// Another request may have built it while this one was working. Keep
-	// whichever landed first, so there is exactly one cached instance — unless
-	// what is there has expired, in which case this fresher one replaces it and
-	// the map's reference to the old one is released. Any request still holding
-	// the old image keeps its own reference, so it stays alive until that
-	// request is done with it.
-	if existing, ok := p.loaded[key]; ok && !existing.stale(now) {
-		p.mu.Unlock()
-		d.Close()
-		return existing.data.Ref(), make(http.Header), nil
-	} else if ok {
-		existing.data.Close()
-	}
 	p.loaded[key] = entry
-	p.mu.Unlock()
 
-	return d.Ref(), make(http.Header), nil
+	return d.Ref()
+}
+
+// evictLocked makes room for one more entry. The caller holds the lock.
+//
+// Expired entries go first. Nothing else ever removes one — an entry is only
+// replaced when its own key is asked for again — so without this sweep a TTL
+// bounds how *stale* the cache gets and not how *large*, and a key that is
+// never requested twice stays resident for the life of the process.
+//
+// Then the least recently used, until there is room. The cap is what makes this
+// a cache rather than an index of every watermark the source has ever been
+// asked for. The old argument for leaving it unbounded — that the key is an
+// object path, so the entry count is bounded by the number of objects that
+// exist — held for a directory on disk and does not hold for an origin, which
+// may mint a valid image for any path it likes. These are decoded images in
+// memory, so the bound has to be iStore's, not the source's.
+func (p *watermarkProvider) evictLocked(now time.Time) {
+	for k, c := range p.loaded {
+		if c.stale(now) {
+			c.data.Close()
+			delete(p.loaded, k)
+		}
+	}
+
+	for len(p.loaded) >= maxWatermarks {
+		oldestKey, oldest := "", time.Time{}
+		for k, c := range p.loaded {
+			if oldestKey == "" || c.used.Before(oldest) {
+				oldestKey, oldest = k, c.used
+			}
+		}
+		p.loaded[oldestKey].data.Close()
+		delete(p.loaded, oldestKey)
+	}
 }
 
 // build produces the watermark image for a spec.
