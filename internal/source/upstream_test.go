@@ -604,3 +604,65 @@ func TestTruncatedBodyIsAnUpstreamError(t *testing.T) {
 		t.Errorf("StatusCode() = %d, want 502", ue.StatusCode())
 	}
 }
+
+// A configured URL may hold credentials, and a rejected configuration is the
+// one place a secret gets printed repeatedly rather than once: the error goes
+// to a fatal log line, the supervisor restarts the process, and it fails again.
+// So no rejection may echo the input.
+func TestStartupRefusalNamesNoSecret(t *testing.T) {
+	const pw = "hunter2"
+	const tok = "s3cr3t-token"
+
+	cases := []struct {
+		name string
+		base string
+	}{
+		{"query string", "http://alice:" + pw + "@origin/images?token=" + tok},
+		{"fragment", "http://alice:" + pw + "@origin/images#" + tok},
+		{"unsupported scheme", "ftp://alice:" + pw + "@origin/images"},
+		{"no host", "http://alice:" + pw + "@/images"},
+		{"unparseable escape", "http://alice:" + pw + "@origin/%zz"},
+		{"control character", "http://alice:" + pw + "@ori\x7fgin/"},
+		{"secret in the path", "http://origin/" + tok + "?a=b"},
+		{"empty", ""},
+		{"no scheme", "localhost:3030"},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, err := NewUpstream(c.base, time.Second)
+			if err == nil {
+				t.Fatal("expected a refusal")
+			}
+			msg := err.Error()
+			t.Logf("%s", msg)
+
+			if strings.Contains(msg, pw) {
+				t.Errorf("the password is in the error")
+			}
+			if strings.Contains(msg, tok) {
+				// Redacted() would pass the password check and fail this one:
+				// it replaces the password and keeps the query and path.
+				t.Errorf("a query or path secret is in the error")
+			}
+			if strings.Contains(msg, "alice") {
+				t.Errorf("the username is in the error")
+			}
+			if !strings.Contains(msg, "ISTORE_UPSTREAM") {
+				t.Errorf("the error does not say which setting is wrong")
+			}
+		})
+	}
+}
+
+// Saying nothing at all would be safe and useless. The host is what an operator
+// needs to see to recognise their own typo.
+func TestStartupRefusalNamesTheHost(t *testing.T) {
+	_, err := NewUpstream("http://alice:hunter2@images.internal:8080/x?token=s3cr3t", time.Second)
+	if err == nil {
+		t.Fatal("expected a refusal")
+	}
+	if !strings.Contains(err.Error(), "images.internal:8080") {
+		t.Errorf("error = %q, want the host in it", err)
+	}
+}

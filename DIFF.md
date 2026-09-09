@@ -104,7 +104,17 @@ The pixel budget matches OSS deliberately; the rest are iStore's own.
 | Single dimension for `rotate` | 4,096 px | unbounded — a 5000 px source rotates fine | — |
 | Animation frames | pixel budget only | 300 | `ISTORE_MAX_ANIMATION_FRAMES` |
 | Source file size | — | 100 MiB | `ISTORE_MAX_SOURCE_BYTES` |
+| Watermark pixels | not documented | 8 MP | `ISTORE_MAX_WATERMARK_RESOLUTION` |
+| Watermark file size | not documented | 16 MiB | `ISTORE_MAX_WATERMARK_BYTES` |
 | Per-request processing time | — | 20 s | `ISTORE_PROCESS_TIMEOUT_MS` |
+
+A watermark gets its own budgets rather than the source image's, and they are
+much tighter: 8 MP against the source's 250 MP. A watermark is a decoration
+composited onto an image, and the source ceiling is far too generous for one —
+a 440 KB PNG that decodes to 144 MP passed it and cost 444 MB of RSS for a
+single request. `watermark,image_` naming an object past either limit returns
+`413 SourceTooLarge`, decided from the header before anything is decoded. Raise
+the limits if a deployment genuinely composites something large.
 
 The pixel budget is set to OSS's 250 MP rather than something smaller, so a
 source OSS would accept is not refused here. What that costs depends on the
@@ -163,7 +173,7 @@ about iStore against itself, not about OSS.
 | Origin returns 3xx | — | `502`. Redirects are not followed — doing so would hand the choice of destination back to the origin, and passing the 3xx to the client would send it to fetch the unprocessed original |
 | Origin unreachable / times out | — | `502` / `504`. The fetch has its own budget, `ISTORE_UPSTREAM_TIMEOUT_MS` (10 s), separate from `ISTORE_PROCESS_TIMEOUT_MS` |
 | Client `Range` requests | Not supported | Not supported. iStore's own request to the origin is ranged; a client asking iStore for a range still gets the whole object |
-| Watermark objects | Read from the root, cached in memory for the process's life | Fetched from the origin, cached for `ISTORE_UPSTREAM_TTL_SEC`. Either way the cache holds at most 64 decoded watermarks, least-recently-used first out |
+| Watermark objects | Read from the root, cached in memory for the process's life | Fetched from the origin, cached for `ISTORE_UPSTREAM_TTL_SEC`. Either way the cache holds at most 64 watermarks and `ISTORE_WATERMARK_CACHE_BYTES` of them, least-recently-used first out, and concurrent first-time requests for one watermark are collapsed into a single fetch |
 | A `HEAD` of the untouched source | Opens the file, reads nothing | One ranged request for 512 bytes — enough to sniff the format; the length comes from `Content-Range` |
 | Origin stalls or hangs up mid-object | — | `504` / `502`, the same as a failure on the response headers. A `GET` already streaming when that happens ends as a truncated response, which is what any proxy does once the headers are out |
 

@@ -45,17 +45,30 @@ var _ Source = (*Upstream)(nil)
 func NewUpstream(base string, timeout time.Duration) (*Upstream, error) {
 	u, err := url.Parse(strings.TrimSpace(base))
 	if err != nil {
-		return nil, fmt.Errorf("source: upstream %q: %w", base, err)
+		// Neither the input nor the wrapped error, and this is not fussiness.
+		// url.Error prints the URL it failed on verbatim — net/url does not
+		// redact, unlike net/http — so wrapping it would put the configured
+		// credentials in the message. And the message goes to a fatal log line
+		// on a supervised process, which restarts, and fails again: the one
+		// place a secret gets printed repeatedly rather than once.
+		return nil, errors.New("source: ISTORE_UPSTREAM is not a valid URL")
 	}
+
+	// Past the parse the URL can be named, but only by scheme and host.
+	// Redacting is not enough here: Redacted() replaces the password and keeps
+	// the query, and "carries a query string" is one of the refusals below —
+	// in the deployment that trips it, that query is quite likely a token.
+	name := safeName(u)
+
 	switch {
 	case u.Scheme != "http" && u.Scheme != "https":
-		return nil, fmt.Errorf("source: upstream %q must be an http:// or https:// URL", base)
+		return nil, fmt.Errorf("source: ISTORE_UPSTREAM (%s) must be an http:// or https:// URL", name)
 	case u.Host == "":
-		return nil, fmt.Errorf("source: upstream %q has no host", base)
+		return nil, fmt.Errorf("source: ISTORE_UPSTREAM (%s) has no host", name)
 	case u.RawQuery != "" || u.ForceQuery:
-		return nil, fmt.Errorf("source: upstream %q must not carry a query string", base)
+		return nil, fmt.Errorf("source: ISTORE_UPSTREAM (%s) must not carry a query string", name)
 	case u.Fragment != "":
-		return nil, fmt.Errorf("source: upstream %q must not carry a fragment", base)
+		return nil, fmt.Errorf("source: ISTORE_UPSTREAM (%s) must not carry a fragment", name)
 	}
 
 	if timeout <= 0 {
@@ -348,6 +361,25 @@ func isTimeout(err error) bool {
 // its own *url.Error; this is the same courtesy for the copy iStore keeps, and
 // it is the only place iStore prints the target URL at all.
 func redacted(t *url.URL) string { return t.Redacted() }
+
+// safeName renders the parts of a configured URL that can be named in a startup
+// error: the scheme and the host, and nothing else.
+//
+// Everything omitted is omitted because it can hold a secret. Userinfo is the
+// obvious one. The query is the less obvious one, and the reason Redacted() is
+// not used here — it leaves the query intact, and a query string is itself one
+// of the things NewUpstream refuses. The path is dropped for the same reason a
+// signed URL's path is: it is sometimes the credential.
+func safeName(u *url.URL) string {
+	switch {
+	case u.Host != "":
+		return u.Scheme + "://" + u.Host
+	case u.Scheme != "":
+		return u.Scheme + "://"
+	default:
+		return "unrecognisable"
+	}
+}
 
 // UpstreamError is a fetch the origin did not satisfy.
 //

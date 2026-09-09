@@ -93,6 +93,12 @@ func run() error {
 	hc.UpstreamTTL = time.Duration(envInt("ISTORE_UPSTREAM_TTL_SEC",
 		int(hc.UpstreamTTL/time.Second))) * time.Second
 	hc.UpstreamInfoMaxBytes = int64(envInt("ISTORE_UPSTREAM_INFO_MAX_BYTES", int(hc.UpstreamInfoMaxBytes)))
+	hc.MaxWatermarkBytes = int64(envInt("ISTORE_MAX_WATERMARK_BYTES", int(hc.MaxWatermarkBytes)))
+	hc.WatermarkCacheBytes = int64(envInt("ISTORE_WATERMARK_CACHE_BYTES", int(hc.WatermarkCacheBytes)))
+	// Megapixels, to match ISTORE_MAX_SRC_RESOLUTION's units rather than sit
+	// next to it meaning something else.
+	hc.MaxWatermarkResolution = envInt("ISTORE_MAX_WATERMARK_RESOLUTION",
+		hc.MaxWatermarkResolution/1_000_000) * 1_000_000
 	hc.CacheDir = env("ISTORE_CACHE_DIR", "")
 	hc.Concurrency = envInt("ISTORE_CONCURRENCY", runtime.GOMAXPROCS(0))
 	hc.MaxSourceBytes = int64(envInt("ISTORE_MAX_SOURCE_BYTES", int(hc.MaxSourceBytes)))

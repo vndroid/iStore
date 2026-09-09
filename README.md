@@ -86,9 +86,8 @@ sends neither leaves nothing to key on, so the key carries a time bucket instead
 — that is `ISTORE_UPSTREAM_TTL_SEC`, and it is why a replaced object turns over
 within five minutes by default rather than never. Give the origin an `ETag` and
 the TTL stops mattering. The same TTL ages the in-memory watermark map, which
-has no validator of its own; its *size* is bounded separately, by a fixed cap on
-the number of decoded watermarks held — a TTL alone would not do it, since an
-entry is only replaced when its own key is asked for again.
+has no validator of its own; its size is bounded separately — see
+[Watermark limits](#watermark-limits).
 
 **Signing matters more here.** Unsigned local mode exposes a directory. Unsigned
 upstream mode lets anyone who can reach the port drive arbitrary transform
@@ -468,6 +467,9 @@ unchanged:
 | `ISTORE_CACHE_EVICT_INTERVAL_MIN` | `10` | how often to sweep |
 | `ISTORE_AVIF_SPEED` | `8` | 0 slowest/smallest .. 9 fastest/largest |
 | `ISTORE_MAX_ANIMATION_FRAMES` | `300` | refuse animations longer than this |
+| `ISTORE_MAX_WATERMARK_RESOLUTION` | `8` *(megapixels)* | refuse a watermark of more pixels than this — see [Watermark limits](#watermark-limits) |
+| `ISTORE_MAX_WATERMARK_BYTES` | `16777216` | refuse a watermark larger than this on the wire |
+| `ISTORE_WATERMARK_CACHE_BYTES` | `67108864` | total memory the watermark cache may hold |
 | `ISTORE_KEY` | *(unset — no signing)* | hex HMAC key, comma-separated for rotation |
 | `ISTORE_SALT` | *(unset — no signing)* | hex HMAC salt, one per key |
 | `ISTORE_SIGNATURE_SIZE` | `32` | bytes of the HMAC kept, 1..32 |
@@ -476,6 +478,34 @@ unchanged:
 
 `ISTORE_ROOT` and `ISTORE_UPSTREAM` are mutually exclusive: setting both, or
 neither, fails at startup rather than picking one.
+
+### Watermark limits
+
+A watermark is a decoration composited onto an image, and it gets its own
+budgets rather than the source image's. Three of them, because they stop three
+different things:
+
+| variable | bounds | why it is not the others |
+|---|---|---|
+| `ISTORE_MAX_WATERMARK_RESOLUTION` | one watermark, in pixels | **The one that protects the process.** Bytes and pixels are barely related: a 440 KB PNG of a flat colour decodes to 144 megapixels and cost a measured 444 MB of RSS for one request. No byte limit low enough to be useful catches it, and the source image's own 250 MP budget — right for a photograph, absurd for a logo — let it through. |
+| `ISTORE_MAX_WATERMARK_BYTES` | one watermark, on the wire | The cheap check; it needs no decode. |
+| `ISTORE_WATERMARK_CACHE_BYTES` | every retained watermark together | A per-item limit bounds one entry and the entry cap bounds how many. Their product is what is actually resident, and 64 entries at the source's 100 MiB limit came to 6.25 GiB. |
+
+Defaults are 8 MP, 16 MiB and 64 MiB, plus a fixed cap of 64 retained
+watermarks. 8 MP is a 2828×2828 square or a 4000×2000 banner. Cost scales at
+roughly 3 MB of RSS per megapixel, so the default is about 25 MB per concurrent
+use — multiply by `ISTORE_CONCURRENCY` before raising it. A watermark past any
+of these gets `413 SourceTooLarge`, decided from the header, before anything is
+decoded.
+
+If `ISTORE_WATERMARK_CACHE_BYTES` is set below `ISTORE_MAX_WATERMARK_BYTES`, the
+per-item limit comes down to meet it and the server says so at startup: the
+total is the memory bound, and a memory bound someone set deliberately should
+not be quietly raised by a per-item default.
+
+Concurrent first-time requests for the same watermark are collapsed into one
+fetch, so a cold cache and a burst of traffic cost one download rather than one
+per request.
 
 Every `ISTORE_*` variable imgproxy documents as `IMGPROXY_*` for the processing
 and security layers also applies; the prefix is the only change.

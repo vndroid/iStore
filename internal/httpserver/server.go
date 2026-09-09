@@ -73,6 +73,20 @@ type Config struct {
 	CacheDir string
 	// MaxSourceBytes rejects source objects larger than this.
 	MaxSourceBytes int64
+
+	// MaxWatermarkBytes rejects a watermark object larger than this, on the
+	// wire. Separate from MaxSourceBytes because a watermark is a decoration
+	// composited onto an image, not the image, and giving it the source's
+	// budget is what made 64 cached watermarks worth 6.25 GiB.
+	MaxWatermarkBytes int64
+	// MaxWatermarkResolution rejects a watermark of more pixels than this,
+	// counted as width x height x frames and checked from the header before
+	// anything is decoded. This is the bound that protects the process: bytes
+	// and pixels are only loosely related, and a 440 KB PNG that decodes to
+	// 144 MP cost a measured 444 MB of RSS for one request.
+	MaxWatermarkResolution int
+	// WatermarkCacheBytes bounds every retained watermark added together.
+	WatermarkCacheBytes int64
 	// Concurrency caps simultaneous image processing. Zero means GOMAXPROCS.
 	Concurrency int
 	// ProcessTimeout bounds one transcode, not counting the fetch.
@@ -117,6 +131,28 @@ const DefaultUpstreamTTL = 5 * time.Minute
 // mode. See serveInfo for why the ordinary case never reaches it.
 const DefaultUpstreamInfoMaxBytes = 10 << 20
 
+// Watermark budgets. See the watermarkProvider doc comment for why there are
+// three of them and what each one actually stops.
+const (
+	// DefaultMaxWatermarkBytes is one watermark on the wire. Generous for a
+	// logo, and small enough that the cache budget below holds several.
+	DefaultMaxWatermarkBytes = 16 << 20
+
+	// DefaultMaxWatermarkResolution is one watermark in pixels.
+	//
+	// 8 MP is a 2828x2828 square or a 4000x2000 banner — far more than any
+	// real watermark needs, and 31x below the source image's 250 MP budget,
+	// which is the ceiling this replaces. Measured cost scales at roughly
+	// 3 MB of RSS per megapixel, so 8 MP is about 25 MB per concurrent use;
+	// the 144 MP image that prompted this was 444 MB. Raise it if a deployment
+	// genuinely composites something huge, and multiply by ISTORE_CONCURRENCY
+	// when deciding how far.
+	DefaultMaxWatermarkResolution = 8_000_000
+
+	// DefaultWatermarkCacheBytes is every retained watermark added together.
+	DefaultWatermarkCacheBytes = 64 << 20
+)
+
 // NewDefaultConfig returns usable defaults.
 func NewDefaultConfig() Config {
 	return Config{
@@ -126,6 +162,10 @@ func NewDefaultConfig() Config {
 		UpstreamTimeout:      DefaultUpstreamTimeout,
 		UpstreamTTL:          DefaultUpstreamTTL,
 		UpstreamInfoMaxBytes: DefaultUpstreamInfoMaxBytes,
+
+		MaxWatermarkBytes:      DefaultMaxWatermarkBytes,
+		MaxWatermarkResolution: DefaultMaxWatermarkResolution,
+		WatermarkCacheBytes:    DefaultWatermarkCacheBytes,
 	}
 }
 
@@ -181,7 +221,7 @@ func New(cfg Config, newProcessor func(auximageprovider.Provider) (*processing.P
 		}
 	}
 
-	watermarks := newWatermarkProvider(src, cfg.MaxSourceBytes, ttl)
+	watermarks := newWatermarkProvider(src, cfg, ttl)
 	proc, err := newProcessor(watermarks)
 	if err != nil {
 		return nil, err
@@ -1019,6 +1059,13 @@ func (s *Server) failProcess(w http.ResponseWriter, r *http.Request, err error) 
 	}
 	if errors.Is(err, ErrBadWatermark) {
 		s.fail(w, r, http.StatusBadRequest, "InvalidArgument", ErrBadWatermark.Error())
+		return
+	}
+	if errors.Is(err, ErrWatermarkTooLarge) {
+		// 413 rather than 400: the request is well-formed, the object it names
+		// is simply bigger than this deployment will composite. Same status a
+		// too-large source gets, for the same reason.
+		s.fail(w, r, http.StatusRequestEntityTooLarge, "SourceTooLarge", ErrWatermarkTooLarge.Error())
 		return
 	}
 	if errors.Is(err, context.DeadlineExceeded) {

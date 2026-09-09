@@ -3,6 +3,7 @@ package httpserver
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/color"
 	"image/png"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -181,7 +183,7 @@ func TestWatermarkCacheIsBounded(t *testing.T) {
 	}
 
 	t.Run("distinct keys, no expiry", func(t *testing.T) {
-		p := newWatermarkProvider(src, 100<<20, time.Hour)
+		p := newWatermarkProvider(src, NewDefaultConfig(), time.Hour)
 		defer p.Close()
 
 		for _, name := range names {
@@ -197,7 +199,7 @@ func TestWatermarkCacheIsBounded(t *testing.T) {
 	})
 
 	t.Run("expired entries are swept", func(t *testing.T) {
-		p := newWatermarkProvider(src, 100<<20, time.Nanosecond)
+		p := newWatermarkProvider(src, NewDefaultConfig(), time.Nanosecond)
 		defer p.Close()
 
 		for _, name := range names {
@@ -215,7 +217,7 @@ func TestWatermarkCacheIsBounded(t *testing.T) {
 	})
 
 	t.Run("a local source still never expires", func(t *testing.T) {
-		p := newWatermarkProvider(src, 100<<20, 0)
+		p := newWatermarkProvider(src, NewDefaultConfig(), 0)
 		defer p.Close()
 
 		d, _, err := p.Get(context.Background(), imageOptions(names[0]))
@@ -341,5 +343,257 @@ func TestGetStillFetchesTheWholeObject(t *testing.T) {
 	}
 	if ct := w.Header().Get("Content-Type"); ct != "image/jpeg" {
 		t.Errorf("Content-Type = %q", ct)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Watermark budgets. The entry cap alone bounded how many watermarks were
+// resident and nothing about what they weighed — 64 entries at the source
+// image's 100 MiB limit came to 6.25 GiB — and no byte limit bounds the decode:
+// a 440 KB PNG of a flat colour decodes to 144 MP and cost a measured 444 MB of
+// RSS for one request, which the source image's own 250 MP budget waved through.
+
+// solidPNG returns a PNG of side x side that compresses to almost nothing —
+// small on the wire, enormous once decoded.
+func solidPNG(t *testing.T, side int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, side, side))
+	for y := range side {
+		for x := range side {
+			img.Set(x, y, color.RGBA{10, 20, 30, 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// noisePNG returns a PNG of roughly approxBytes that does not compress away.
+func noisePNG(t *testing.T, approxBytes int) []byte {
+	t.Helper()
+	side := 1
+	for side*side*3 < approxBytes {
+		side++
+	}
+	img := image.NewRGBA(image.Rect(0, 0, side, side))
+	seed := uint32(1)
+	for y := range side {
+		for x := range side {
+			seed = seed*1664525 + 1013904223
+			img.Set(x, y, color.RGBA{uint8(seed >> 16), uint8(seed >> 8), uint8(seed), 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func watermarkDir(t *testing.T, files map[string][]byte) source.Source {
+	t.Helper()
+	dir := t.TempDir()
+	for name, b := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	src, err := source.NewLocal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return src
+}
+
+func heldBytes(p *watermarkProvider) int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.usedBytes
+}
+
+// The pixel budget is the one that protects the process, and it has to be
+// enforced from the header — refusing after the decode is refusing after the
+// damage.
+func TestWatermarkResolutionIsBounded(t *testing.T) {
+	small := solidPNG(t, 1000) // 1 MP
+	big := solidPNG(t, 4000)   // 16 MP
+	t.Logf("1 MP is %d bytes on the wire; 16 MP is %d", len(small), len(big))
+
+	src := watermarkDir(t, map[string][]byte{"small.png": small, "big.png": big})
+
+	cfg := NewDefaultConfig()
+	cfg.MaxWatermarkResolution = 4_000_000 // 4 MP
+	p := newWatermarkProvider(src, cfg, 0)
+	defer p.Close()
+
+	d, _, err := p.Get(context.Background(), imageOptions("small.png"))
+	if err != nil {
+		t.Fatalf("1 MP watermark refused: %v", err)
+	}
+	d.Close()
+
+	_, _, err = p.Get(context.Background(), imageOptions("big.png"))
+	if !errors.Is(err, ErrWatermarkTooLarge) {
+		t.Errorf("16 MP watermark: err = %v, want ErrWatermarkTooLarge", err)
+	}
+	if p.size() != 1 {
+		t.Errorf("cache holds %d entries, want only the accepted one", p.size())
+	}
+
+	// The wire size is no defence here: the refused image is smaller than the
+	// accepted one would be at any sane byte limit.
+	if len(big) > 2<<20 {
+		t.Errorf("fixture is %d bytes, too big to make the point", len(big))
+	}
+}
+
+// The byte total, not just the entry count.
+func TestWatermarkCacheBytesAreBounded(t *testing.T) {
+	const each = 1 << 20
+	blob := noisePNG(t, each)
+
+	files := map[string][]byte{}
+	names := make([]string, 32)
+	for i := range names {
+		names[i] = "wm" + strconv.Itoa(i) + ".png"
+		files[names[i]] = blob
+	}
+	src := watermarkDir(t, files)
+
+	cfg := NewDefaultConfig()
+	cfg.WatermarkCacheBytes = 8 << 20 // room for ~8 of them
+	p := newWatermarkProvider(src, cfg, 0)
+	defer p.Close()
+
+	for _, name := range names {
+		d, _, err := p.Get(context.Background(), imageOptions(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.Close()
+	}
+
+	held := heldBytes(p)
+	t.Logf("%d x %d-byte watermarks -> %d entries, %d bytes held (budget %d)",
+		len(names), len(blob), p.size(), held, cfg.WatermarkCacheBytes)
+
+	if held > cfg.WatermarkCacheBytes {
+		t.Errorf("held %d bytes, budget is %d", held, cfg.WatermarkCacheBytes)
+	}
+	if p.size() == 0 {
+		t.Error("the cache evicted everything; the budget should hold several")
+	}
+}
+
+// The byte accounting has to survive eviction, expiry and replacement, or the
+// budget drifts until it stops binding.
+func TestWatermarkByteAccountingStaysExact(t *testing.T) {
+	blob := noisePNG(t, 256<<10)
+	files := map[string][]byte{}
+	names := make([]string, 20)
+	for i := range names {
+		names[i] = "wm" + strconv.Itoa(i) + ".png"
+		files[names[i]] = blob
+	}
+	src := watermarkDir(t, files)
+
+	cfg := NewDefaultConfig()
+	cfg.WatermarkCacheBytes = 2 << 20
+	p := newWatermarkProvider(src, cfg, 50*time.Millisecond)
+	defer p.Close()
+
+	check := func(stage string) {
+		p.mu.Lock()
+		var want int64
+		for _, c := range p.loaded {
+			want += c.size
+		}
+		got := p.usedBytes
+		p.mu.Unlock()
+		if got != want {
+			t.Errorf("%s: usedBytes = %d, entries add up to %d", stage, got, want)
+		}
+	}
+
+	for _, name := range names {
+		d, _, err := p.Get(context.Background(), imageOptions(name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		d.Close()
+	}
+	check("after LRU eviction")
+
+	time.Sleep(80 * time.Millisecond) // everything expires
+	d, _, err := p.Get(context.Background(), imageOptions(names[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	check("after an expiry sweep")
+
+	d, _, err = p.Get(context.Background(), imageOptions(names[0]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	check("after a hit")
+
+	p.Close()
+	if got := heldBytes(p); got != 0 {
+		t.Errorf("after Close, usedBytes = %d, want 0", got)
+	}
+}
+
+// Concurrent first-time requests for one watermark used to be one download each.
+func TestWatermarkConcurrentMissFetchesOnce(t *testing.T) {
+	blob := noisePNG(t, 256<<10)
+
+	var fetches atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		time.Sleep(30 * time.Millisecond)
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(blob)
+	}))
+	defer origin.Close()
+
+	up, err := source.NewUpstream(origin.URL, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newWatermarkProvider(up, NewDefaultConfig(), 5*time.Minute)
+	defer p.Close()
+
+	const n = 16
+	var wg sync.WaitGroup
+	var bad atomic.Int32
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d, _, err := p.Get(context.Background(), imageOptions("wm.png"))
+			if err != nil || d == nil {
+				bad.Add(1)
+				return
+			}
+			if _, err := d.Size(); err != nil {
+				bad.Add(1)
+			}
+			d.Close()
+		}()
+	}
+	wg.Wait()
+
+	if got := bad.Load(); got != 0 {
+		t.Errorf("%d of %d requests failed", got, n)
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Errorf("%d concurrent requests caused %d origin fetches, want 1", n, got)
+	}
+	if p.size() != 1 {
+		t.Errorf("cache holds %d entries, want 1", p.size())
 	}
 }
