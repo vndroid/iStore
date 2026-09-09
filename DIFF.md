@@ -116,6 +116,13 @@ single request. `watermark,image_` naming an object past either limit returns
 `413 SourceTooLarge`, decided from the header before anything is decoded. Raise
 the limits if a deployment genuinely composites something large.
 
+The pixel budget applies to `watermark,text_` as well, which OSS does not bound
+in any documented way. `size_` is already capped at 1000 by the grammar, but the
+text itself is not, so a long string at a large size produces a canvas bounded
+by nothing: `text_<30 chars>,size_1000` is refused here. `rotate_` is checked
+again after rotation, because a 45° turn grows the bounding box by up to half
+again.
+
 The pixel budget is set to OSS's 250 MP rather than something smaller, so a
 source OSS would accept is not refused here. What that costs depends on the
 request, not on the source alone — measured on a 17000×14000 JPEG (238 MP) with

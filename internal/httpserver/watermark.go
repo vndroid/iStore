@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/vndroid/istore/internal/imagedata"
 	"github.com/vndroid/istore/internal/imageinfo"
@@ -32,6 +35,7 @@ import (
 // from: on local disk that means the path resolver, and therefore the traversal
 // and symlink checks, apply to watermarks too; against an origin it means the
 // watermark comes from the origin, through the same bounded fetch.
+//
 // A watermark has three separate budgets, and they bound three different things.
 // Getting one of them right does not get the others right, which is the reason
 // each is spelled out rather than reusing the source image's limits:
@@ -215,9 +219,8 @@ func (p *watermarkProvider) Get(ctx context.Context, o *options.Options) (imaged
 	}
 
 	key := spec.cacheKey()
-	now := time.Now()
 
-	if d := p.hit(key, now); d != nil {
+	if d := p.hit(key, time.Now()); d != nil {
 		return d, make(http.Header), nil
 	}
 
@@ -228,8 +231,14 @@ func (p *watermarkProvider) Get(ctx context.Context, o *options.Options) (imaged
 	// through the group would mean waiters referencing an image whose only
 	// other holder might be closing it at that moment, which is exactly the
 	// use-after-free this cache already had once.
+	// Every time is read fresh, never carried across the build. A build can
+	// outrun the TTL — a slow origin and ISTORE_UPSTREAM_TTL_SEC=1 is enough —
+	// and stamping the finished entry with the timestamp from before it started
+	// stores something already expired. The entry then misses for every later
+	// request, each of which falls past the group and downloads again: the
+	// coalescing still holds for one burst and then stops working entirely.
 	_, err, _ := p.flight.Do(key, func() (any, error) {
-		if d := p.hit(key, now); d != nil {
+		if d := p.hit(key, time.Now()); d != nil {
 			d.Close()
 			return nil, nil
 		}
@@ -237,21 +246,27 @@ func (p *watermarkProvider) Get(ctx context.Context, o *options.Options) (imaged
 		if err != nil {
 			return nil, err
 		}
-		p.store(key, d, now)
+		p.store(key, d)
 		return nil, nil
 	})
 	if err != nil {
 		return nil, nil, err
 	}
 
-	if d := p.hit(key, now); d != nil {
+	if d := p.hit(key, time.Now()); d != nil {
 		return d, make(http.Header), nil
 	}
 
-	// The cache declined to keep it, or it expired in the microseconds since.
-	// Unreachable while a single admissible watermark fits the cache budget —
-	// newWatermarkProvider guarantees that — so this is the defensive path, and
-	// it serves the request rather than failing it.
+	// Reached only when the cache would not keep this watermark at all — it is
+	// larger than the whole cache budget — which newWatermarkProvider's clamp
+	// makes unreachable, or when this goroutine was descheduled for a whole TTL
+	// between the store and the hit above.
+	//
+	// It deliberately does not go back through the group. An entry the cache
+	// declines is one no amount of coalescing will make shareable, and retrying
+	// the group for it would serialise every request for that key behind a
+	// build whose result is thrown away each time.
+	slog.Debug("watermark not retained; building for this request only", "key", key)
 	d, err := p.build(ctx, spec)
 	if err != nil {
 		return nil, nil, err
@@ -282,11 +297,17 @@ func (p *watermarkProvider) hit(key string, now time.Time) imagedata.ImageData {
 
 // store hands the cache ownership of d. It always consumes the reference: what
 // it does not retain, it closes.
-func (p *watermarkProvider) store(key string, d imagedata.ImageData, now time.Time) {
+//
+// The clock is read here rather than taken from the caller, deliberately: the
+// caller's timestamp predates a build that may have taken longer than the TTL,
+// and an entry stamped with it would be born expired.
+func (p *watermarkProvider) store(key string, d imagedata.ImageData) {
 	size := int64(0)
 	if n, err := d.Size(); err == nil {
 		size = int64(n)
 	}
+
+	now := time.Now()
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -401,6 +422,11 @@ func (p *watermarkProvider) build(ctx context.Context, spec watermarkSpec) (imag
 		if err := p.joinImageAndText(ctx, img, spec); err != nil {
 			return nil, err
 		}
+		// The join widens the canvas by the object watermark plus interval_,
+		// so the combined result needs checking even though both halves passed.
+		if err := p.checkCanvas(img, "combined watermark"); err != nil {
+			return nil, err
+		}
 	}
 
 	// Nothing about a watermark image wants progressive encoding: it is an
@@ -408,8 +434,85 @@ func (p *watermarkProvider) build(ctx context.Context, spec watermarkSpec) (imag
 	return img.Save(imagetype.PNG, 100, vips.SaveOverrides{})
 }
 
+// checkCanvas applies the pixel budget to a rendered image.
+//
+// The budget has to reach the text path, not only the object path. `text_`,
+// `size_` and `rotate_` are free request parameters, and the canvas they
+// produce is not bounded by any file: measured, `text_<30 chars>,size_1000`
+// served a 200 while adding 350 MB of RSS, and `text_<20 chars>,size_1000,
+// rotate_45` was refused downstream only *after* spending 598 MB — a refusal
+// that costs more than the work it refuses is not a limit.
+func (p *watermarkProvider) checkCanvas(img *vips.Image, what string) error {
+	if p.maxResolution <= 0 {
+		return nil
+	}
+	px, ok := pixelCount(img.Width(), img.Height(), 1)
+	if !ok || px > int64(p.maxResolution) {
+		slog.Debug("watermark canvas too large",
+			"what", what, "width", img.Width(), "height", img.Height(), "limit", p.maxResolution)
+		return ErrWatermarkTooLarge
+	}
+	return nil
+}
+
+// checkTextEstimate refuses text that cannot fit the budget, before Pango
+// renders anything.
+//
+// The estimate deliberately under-states the canvas, so it never refuses text
+// that would have fitted. Measured advance per character as a fraction of the
+// font size: 0.99 for a run of "W", 0.98 for CJK, 0.24 for a run of "i" — 0.2
+// is below anything observed. Line height measured at 0.73 of the font size;
+// 0.7 is below it.
+//
+// It cannot make the render free, and does not pretend to. Text that clears the
+// estimate but not the real budget is rendered and then refused by checkCanvas,
+// and that render allocates. What bounds the waste is Pango's own surface
+// limit — it refuses to produce a canvas much past 32767 px wide — so the worst
+// case is one render of roughly that width, and the estimate's job is only to
+// keep the obviously absurd requests from reaching it at all.
+func (p *watermarkProvider) checkTextEstimate(spec watermarkSpec) error {
+	if p.maxResolution <= 0 || spec.size <= 0 || spec.text == "" {
+		return nil
+	}
+
+	lines := strings.Split(spec.text, "\n")
+	longest := 0
+	for _, line := range lines {
+		if n := utf8.RuneCountInString(line); n > longest {
+			longest = n
+		}
+	}
+
+	w := int64(longest) * int64(spec.size) * 2 / 10
+	h := int64(len(lines)) * int64(spec.size) * 7 / 10
+	if w <= 0 || h <= 0 {
+		return nil
+	}
+	if w > math.MaxInt64/h || w*h > int64(p.maxResolution) {
+		slog.Debug("watermark text refused before rendering",
+			"runes", longest, "lines", len(lines), "size", spec.size,
+			"at_least", w*h, "limit", p.maxResolution)
+		return ErrWatermarkTooLarge
+	}
+	return nil
+}
+
 // renderText draws the text layer, including its rotation.
+//
+// The budget is applied three times along the way, and each one catches
+// something the others cannot: before the render, because the cheapest refusal
+// is the one that never allocates; after it, because the estimate is
+// approximate and the canvas is not; and after the rotation, because rotating
+// a canvas 45 degrees grows its bounding box by up to half again and that
+// growth is what turned a 20-character request into 598 MB.
 func (p *watermarkProvider) renderText(spec watermarkSpec) (*vips.Image, error) {
+	if err := p.checkTextEstimate(spec); err != nil {
+		return nil, err
+	}
+	return p.renderTextChecked(spec)
+}
+
+func (p *watermarkProvider) renderTextChecked(spec watermarkSpec) (*vips.Image, error) {
 	// Pango sizes in points; at 72 dpi a point is a pixel, which is what OSS's
 	// `size_` means.
 	img, err := vips.NewText(vips.TextOptions{
@@ -428,8 +531,17 @@ func (p *watermarkProvider) renderText(spec watermarkSpec) (*vips.Image, error) 
 		return nil, ErrBadWatermarkText
 	}
 
+	if err := p.checkCanvas(img, "text watermark"); err != nil {
+		img.Clear()
+		return nil, err
+	}
+
 	if spec.rotate%360 != 0 {
 		if err := img.RotateAny(float64(spec.rotate)); err != nil {
+			img.Clear()
+			return nil, err
+		}
+		if err := p.checkCanvas(img, "rotated text watermark"); err != nil {
 			img.Clear()
 			return nil, err
 		}
@@ -602,11 +714,39 @@ func (p *watermarkProvider) checkResolution(b []byte) error {
 		return nil
 	}
 
-	if px := w * h * max(frames, 1); px > p.maxResolution {
+	px, ok := pixelCount(w, h, frames)
+	if !ok {
+		return fmt.Errorf("watermark header claims %dx%d over %d frames, which is not a real image",
+			w, h, frames)
+	}
+	if px > int64(p.maxResolution) {
 		return fmt.Errorf("watermark is %dx%d over %d frames (%d pixels), limit is %d",
 			w, h, frames, px, p.maxResolution)
 	}
 	return nil
+}
+
+// pixelCount multiplies a geometry out without overflowing.
+//
+// Every input comes from an image header, which is attacker-supplied: PNG
+// stores width, height and the APNG frame count as uint32, so a crafted file
+// can claim 4294967295 x 4294967295. Multiplied in `int` that wraps to
+// -8589934591, which is under any limit — the check passes and the guard is
+// gone. ok is false for an overflow and for any non-positive dimension, both of
+// which are refusals rather than sizes: no real image has them.
+func pixelCount(w, h, frames int) (int64, bool) {
+	if w <= 0 || h <= 0 || frames <= 0 {
+		return 0, false
+	}
+	a, b, f := int64(w), int64(h), int64(frames)
+	if a > math.MaxInt64/b {
+		return 0, false
+	}
+	area := a * b
+	if area > math.MaxInt64/f {
+		return 0, false
+	}
+	return area * f, true
 }
 
 // watermarkGeometry reads dimensions from the header where the format allows,

@@ -498,6 +498,18 @@ use — multiply by `ISTORE_CONCURRENCY` before raising it. A watermark past any
 of these gets `413 SourceTooLarge`, decided from the header, before anything is
 decoded.
 
+The pixel budget covers `text_` too, and has to: `text_`, `size_` and `rotate_`
+are free request parameters, so the canvas a text watermark produces is bounded
+by no file at all. `text_<30 chars>,size_1000` used to be served, at 350 MB of
+RSS, and `text_<20 chars>,size_1000,rotate_45` was refused by the pipeline only
+*after* spending 598 MB — a refusal that costs more than the work it refuses is
+not a limit. The budget is now applied before the render (from a deliberate
+under-estimate of the canvas, so it never refuses text that would have fitted),
+after it, and again after any rotation, since rotating 45° grows the bounding
+box by up to half again. Text that clears the estimate but not the real budget
+is still rendered before being refused; that residual is bounded by Pango's own
+surface limit of roughly 32767 px.
+
 If `ISTORE_WATERMARK_CACHE_BYTES` is set below `ISTORE_MAX_WATERMARK_BYTES`, the
 per-item limit comes down to meet it and the server says so at startup: the
 total is the memory bound, and a memory bound someone set deliberately should

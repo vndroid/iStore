@@ -3,6 +3,7 @@ package httpserver
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"image"
 	"image/color"
@@ -595,5 +596,217 @@ func TestWatermarkConcurrentMissFetchesOnce(t *testing.T) {
 	}
 	if p.size() != 1 {
 		t.Errorf("cache holds %d entries, want 1", p.size())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Three further defects, from a second review of the watermark budgets.
+
+// The pixel budget used to be computed as w*h*frames in `int`. Every one of
+// those comes from an image header, which is attacker-supplied: PNG stores all
+// three as uint32, so 4294967295 x 4294967295 wraps to -8589934591 — under any
+// limit — and the guard disappears exactly when it is needed.
+func TestWatermarkPixelCountDoesNotOverflow(t *testing.T) {
+	tests := []struct {
+		name         string
+		w, h, frames int
+		wantOK       bool
+		want         int64
+	}{
+		{"ordinary", 4000, 4000, 1, true, 16_000_000},
+		{"animated", 1000, 1000, 60, true, 60_000_000},
+		{"large but representable", 100000, 100000, 1, true, 10_000_000_000},
+		{"uint32 squared overflows int64", 4294967295, 4294967295, 1, false, 0},
+		{"frames push it over", 3037000500, 3037000500, 2, false, 0},
+		{"zero width", 0, 100, 1, false, 0},
+		{"negative height", 100, -1, 1, false, 0},
+		{"zero frames", 100, 100, 0, false, 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := pixelCount(tt.w, tt.h, tt.frames)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v (got %d)", ok, tt.wantOK, got)
+			}
+			if ok && got != tt.want {
+				t.Errorf("= %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// The same thing through the check that uses it: a crafted header must be
+// refused, not waved through by a wrapped multiplication.
+func TestWatermarkHeaderOverflowIsRefused(t *testing.T) {
+	p := newTestProvider(t)
+	defer p.Close()
+	p.maxResolution = 8_000_000
+
+	pngHeader := func(w, h uint32) []byte {
+		b := []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+		ihdr := make([]byte, 25)
+		binary.BigEndian.PutUint32(ihdr[0:], 13)
+		copy(ihdr[4:], "IHDR")
+		binary.BigEndian.PutUint32(ihdr[8:], w)
+		binary.BigEndian.PutUint32(ihdr[12:], h)
+		ihdr[16] = 8
+		ihdr[17] = 6
+		return append(b, ihdr...)
+	}
+
+	for _, c := range []struct {
+		name string
+		w, h uint32
+	}{
+		{"honest oversize", 4000, 4000},
+		{"crafted to overflow", 4294967295, 4294967295},
+		{"crafted, one dimension maximal", 4294967295, 2147483648},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if err := p.checkResolution(pngHeader(c.w, c.h)); err == nil {
+				t.Errorf("%dx%d passed an 8 MP limit", c.w, c.h)
+			}
+		})
+	}
+
+	// And an honest small one still passes.
+	if err := p.checkResolution(pngHeader(100, 100)); err != nil {
+		t.Errorf("100x100 refused: %v", err)
+	}
+}
+
+// The pre-render estimate must never refuse text that would have fitted. The
+// narrowest glyphs measured advance 0.24 of the font size; the estimate uses
+// 0.2, so anything at or above that ratio has to survive it.
+func TestWatermarkTextEstimateDoesNotOverRefuse(t *testing.T) {
+	p := newTestProvider(t)
+	defer p.Close()
+	p.maxResolution = 8_000_000
+
+	ok := []struct {
+		text string
+		size int
+	}{
+		{"hello", 40},
+		{"© Example Corp 2026", 40},
+		{strings.Repeat("i", 200), 40},
+		{"图片水印测试", 100},
+		{strings.Repeat("W", 20), 200},
+		{"one\ntwo\nthree", 100},
+		{strings.Repeat("W", 20), 1000}, // renders at 14 MP; the estimate must not be the thing that stops it
+	}
+	for _, c := range ok {
+		if err := p.checkTextEstimate(watermarkSpec{text: c.text, size: c.size}); err != nil {
+			t.Errorf("estimate refused %d runes at size %d: %v", len([]rune(c.text)), c.size, err)
+		}
+	}
+
+	// And it must refuse what cannot possibly fit.
+	tooBig := []struct {
+		text string
+		size int
+	}{
+		{strings.Repeat("W", 8000), 1000},
+		{strings.Repeat("W", 400), 1000},
+		{strings.Repeat("W\n", 5000), 1000},
+	}
+	for _, c := range tooBig {
+		if err := p.checkTextEstimate(watermarkSpec{text: c.text, size: c.size}); !errors.Is(err, ErrWatermarkTooLarge) {
+			t.Errorf("estimate accepted %d runes at size %d: %v", len([]rune(c.text)), c.size, err)
+		}
+	}
+}
+
+// A build slower than the TTL used to store an entry that was already expired,
+// because the timestamp was taken before the build started. Every later request
+// then missed and rebuilt, so the cache stopped working entirely — the opposite
+// of what the coalescing was added for.
+func TestWatermarkSlowBuildStillCaches(t *testing.T) {
+	blob := noisePNG(t, 64<<10)
+
+	var fetches atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		time.Sleep(150 * time.Millisecond) // longer than the TTL below
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(blob)
+	}))
+	defer origin.Close()
+
+	up, err := source.NewUpstream(origin.URL, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newWatermarkProvider(up, NewDefaultConfig(), 50*time.Millisecond)
+	defer p.Close()
+
+	d, _, err := p.Get(context.Background(), imageOptions("wm.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+
+	// Immediately afterwards the entry must be usable: it was stored when the
+	// build finished, not when the request started.
+	if got := p.hit("wm.png", time.Now()); got == nil {
+		t.Fatal("the entry a slow build stored is already expired")
+	} else {
+		got.Close()
+	}
+
+	d, _, err = p.Get(context.Background(), imageOptions("wm.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+
+	if got := fetches.Load(); got != 1 {
+		t.Errorf("%d origin fetches for two requests inside the TTL, want 1", got)
+	}
+}
+
+// The same under a burst: a slow build plus a short TTL must not degrade into
+// one download per waiter.
+func TestWatermarkSlowBuildCoalescesTheBurst(t *testing.T) {
+	blob := noisePNG(t, 64<<10)
+
+	var fetches atomic.Int32
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetches.Add(1)
+		time.Sleep(120 * time.Millisecond)
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(blob)
+	}))
+	defer origin.Close()
+
+	up, err := source.NewUpstream(origin.URL, 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newWatermarkProvider(up, NewDefaultConfig(), 40*time.Millisecond)
+	defer p.Close()
+
+	var wg sync.WaitGroup
+	var bad atomic.Int32
+	for range 12 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d, _, err := p.Get(context.Background(), imageOptions("wm.png"))
+			if err != nil || d == nil {
+				bad.Add(1)
+				return
+			}
+			d.Close()
+		}()
+	}
+	wg.Wait()
+
+	if got := bad.Load(); got != 0 {
+		t.Errorf("%d of 12 requests failed", got)
+	}
+	if got := fetches.Load(); got != 1 {
+		t.Errorf("%d origin fetches for one burst, want 1", got)
 	}
 }
