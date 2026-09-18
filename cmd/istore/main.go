@@ -100,6 +100,8 @@ func run() error {
 	hc.MaxWatermarkResolution = envInt("ISTORE_MAX_WATERMARK_RESOLUTION",
 		hc.MaxWatermarkResolution/1_000_000) * 1_000_000
 	hc.CacheDir = env("ISTORE_CACHE_DIR", "")
+	hc.StylesFile = env("ISTORE_STYLES", "")
+	hc.PassthroughNonImages = envBool("ISTORE_PASSTHROUGH_NON_IMAGES", false)
 	hc.Concurrency = envInt("ISTORE_CONCURRENCY", runtime.GOMAXPROCS(0))
 	hc.MaxSourceBytes = int64(envInt("ISTORE_MAX_SOURCE_BYTES", int(hc.MaxSourceBytes)))
 	hc.ProcessTimeout = time.Duration(envInt("ISTORE_PROCESS_TIMEOUT_MS", int(hc.ProcessTimeout/time.Millisecond))) * time.Millisecond
@@ -195,6 +197,16 @@ func envInt(name string, def int) int {
 	if v, ok := os.LookupEnv(name); ok {
 		if i, err := strconv.Atoi(v); err == nil {
 			return i
+		}
+		slog.Warn("ignoring unparseable value", "name", name, "value", v)
+	}
+	return def
+}
+
+func envBool(name string, def bool) bool {
+	if v, ok := os.LookupEnv(name); ok {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
 		}
 		slog.Warn("ignoring unparseable value", "name", name, "value", v)
 	}

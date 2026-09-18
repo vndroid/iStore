@@ -80,12 +80,14 @@ second, full request, and those are bounded separately by
 An origin that ignores `Range` and answers `200` is not a problem either: the
 body is capped at 64 KiB and closed, so the transfer is aborted, not downloaded.
 
-**Cache entries key on the origin's validator.** `ETag`, else `Last-Modified`,
-takes the place of the size and mtime a local stat provides. An origin that
-sends neither leaves nothing to key on, so the key carries a time bucket instead
+**Cache entries key on the origin's validator and reported size.** `ETag`, else
+`Last-Modified`, takes the place of the mtime a local stat provides. An origin
+that sends neither leaves no version to key on, so the key carries a time bucket instead
 — that is `ISTORE_UPSTREAM_TTL_SEC`, and it is why a replaced object turns over
-within five minutes by default rather than never. Give the origin an `ETag` and
-the TTL stops mattering. The same TTL ages the in-memory watermark map, which
+within five minutes by default rather than never. Use an `ETag` that actually
+changes on every replacement; a coarse `Last-Modified` alone can miss a
+same-size update within its timestamp granularity, and suppresses the TTL
+fallback. The same TTL ages the in-memory watermark map, which
 has no validator of its own; its size is bounded separately — see
 [Watermark limits](#watermark-limits).
 
@@ -104,10 +106,15 @@ Round trips per request, so the cost is not a surprise:
 | transform, cache miss | 2 (`HEAD` + `GET`) |
 | 12 concurrent identical transforms, cold | 12 `HEAD` + 1 `GET` — the encode is coalesced |
 | the source untouched | 1 |
-| `HEAD` of the source untouched | 1 (ranged — the type is sniffed from 512 bytes, the length comes from `Content-Range`) |
+| `HEAD` of a transform, cache miss | 2 (`HEAD` + 32 KiB ranged `GET`); no encode and no `Content-Length` |
+| `HEAD` of the source untouched | 1 (ranged — the type is sniffed from up to 32 KiB, the length comes from `Content-Range`) |
 
 `HEAD` is used for the identity check; an origin that answers `405` or `501` to
 it gets a one-byte ranged `GET` instead.
+For a transformed `HEAD`, a warm cache returns the exact output length and
+type. On a miss, iStore checks only the source header: it omits
+`Content-Length`, and omits `Content-Type` when the output format depends on
+decoded image properties (including `format,auto` on animated input).
 
 ### Supported actions
 
@@ -244,12 +251,11 @@ The object key is read from the same root as the image, through the same
 resolver, so traversal and symlink escapes are refused there too. All four
 base64 spellings (raw/padded × url/standard alphabet) are accepted.
 
-An **image** watermark is held in memory after the first read, keyed by its
-object key. A **text** watermark is rendered on every request and never cached:
-its key would be made of `text_`, `type_`, `color_`, `size_`, `shadow_` and
-`rotate_`, all of which the caller picks, so a loop over distinct strings would
-grow that map until the process died. Rendering a line of Pango text costs a few
-hundred microseconds, which is the right price for not having that.
+Image, text and combined watermarks share a bounded in-memory LRU (64 entries,
+64 MiB by default). A text watermark's key covers all rendering parameters;
+repeated identical requests reuse it, while arbitrary new strings can only
+evict older entries. Text is escaped before Pango rendering, so markup in a
+request cannot override the checked font size.
 
 Combinations that cannot all be honoured are refused rather than half-applied:
 `y_` with `voffset_` (both are the vertical offset), `g_`/`x_`/`y_` with
@@ -457,6 +463,8 @@ unchanged:
 | `ISTORE_UPSTREAM_TTL_SEC` | `300` | how long upstream content is reused when the origin sends no `ETag` or `Last-Modified`; also how long a cached watermark is trusted |
 | `ISTORE_UPSTREAM_INFO_MAX_BYTES` | `10485760` | bounds `info`'s whole-object fallback; the ranged path is unaffected |
 | `ISTORE_CACHE_DIR` | *(unset — no cache)* | where transcoded results are stored |
+| `ISTORE_STYLES` | *(unset)* | JSON file mapping style names to `image/...` chains; loaded and validated at startup |
+| `ISTORE_PASSTHROUGH_NON_IMAGES` | `false` | allow the original-object endpoint to serve bytes that are not a registered image type; otherwise return `415` |
 | `ISTORE_BIND` | `:8080` | listen address |
 | `ISTORE_CONCURRENCY` | `GOMAXPROCS` | simultaneous encodes |
 | `ISTORE_MAX_SOURCE_BYTES` | `104857600` | reject larger sources |
@@ -478,6 +486,23 @@ unchanged:
 
 `ISTORE_ROOT` and `ISTORE_UPSTREAM` are mutually exclusive: setting both, or
 neither, fails at startup rather than picking one.
+
+Saved styles use `?x-oss-process=style/thumb` (not combined with other actions).
+For example, set `ISTORE_STYLES=/etc/istore/styles.json` and put this in the file:
+
+```json
+{"thumb":"image/resize,w_200/quality,q_80","hero":"image/resize,w_1600/format,auto"}
+```
+
+Names contain 1–63 ASCII letters, digits, `_`, `-` or `.`. Definitions cannot reference
+another style. Invalid definitions prevent startup; edits take effect after a
+restart. Cache entries are keyed by the expanded chain, so changing a style
+does not reuse its previous output. Signed URLs still sign the public alias
+(`style/thumb`): changing a definition also changes what an existing signed
+URL requests.
+An external CDN or browser can still hold the old response under the same URL,
+especially with the default `immutable` cache header. Use versioned style names
+(for example `thumb-v2`) or purge external caches when changing a definition.
 
 ### Watermark limits
 
@@ -1130,9 +1155,6 @@ Every action in OSS's own list is implemented. What is left is not an action.
 
 **Not an action**
 
-- `style/<name>` — OSS's saved presets, defined in its console. Rejected with an
-  explicit message rather than ignored. Would need a config file mapping a name
-  to a chain.
 - `padding`, `extend` and focus-point gravity are imgproxy features with no OSS
   spelling. `extend` is already reachable through `resize,m_pad`; the other two
   would need an iStore-invented action name.

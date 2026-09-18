@@ -291,6 +291,24 @@ func (c *Chain) IsAutoFormat() bool {
 	return false
 }
 
+// FixedOutputFormat reports a format whose MIME type is known before decoding
+// the source. GIF is excluded: format,gif means preserve the source format for
+// non-GIF inputs, rather than always encode GIF.
+func (c *Chain) FixedOutputFormat() (imagetype.Type, bool) {
+	var format imagetype.Type
+	for _, a := range c.Actions {
+		if a.Name != "format" {
+			continue
+		}
+		t, err := a.format()
+		if err != nil || t == imagetype.Unknown || t == imagetype.GIF {
+			return imagetype.Unknown, false
+		}
+		format = t
+	}
+	return format, format != imagetype.Unknown
+}
+
 // format resolves the target type of a `format` action.
 func (a Action) format() (imagetype.Type, error) {
 	if len(a.Params) != 1 {

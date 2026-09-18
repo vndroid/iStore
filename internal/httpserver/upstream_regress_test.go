@@ -80,7 +80,7 @@ func TestWatermarkReferenceSurvivesAnExpiry(t *testing.T) {
 	d0.Close()
 
 	// A request passes the freshness check and takes its reference.
-	d := p.hit("wm.png", time.Now())
+	d := p.hit(watermarkSpec{path: "wm.png"}.cacheKey(), time.Now())
 	if d == nil {
 		t.Fatal("setup: the entry should be present and fresh")
 	}
@@ -228,7 +228,7 @@ func TestWatermarkCacheIsBounded(t *testing.T) {
 		d.Close()
 
 		p.mu.Lock()
-		c := p.loaded[names[0]]
+		c := p.loaded[watermarkSpec{path: names[0]}.cacheKey()]
 		p.mu.Unlock()
 		if c.stale(time.Now().Add(100 * 365 * 24 * time.Hour)) {
 			t.Error("a zero-TTL entry went stale")
@@ -749,7 +749,7 @@ func TestWatermarkSlowBuildStillCaches(t *testing.T) {
 
 	// Immediately afterwards the entry must be usable: it was stored when the
 	// build finished, not when the request started.
-	if got := p.hit("wm.png", time.Now()); got == nil {
+	if got := p.hit(watermarkSpec{path: "wm.png"}.cacheKey(), time.Now()); got == nil {
 		t.Fatal("the entry a slow build stored is already expired")
 	} else {
 		got.Close()

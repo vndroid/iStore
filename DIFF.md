@@ -15,16 +15,11 @@ response your callers already parse are [`info` resolution fields](#info) and
 
 ---
 
-## Not implemented
-
-| Action | Behaviour |
-|---|---|
-| `style/<name>` | `400`. OSS's saved presets live in its console; iStore would need a config file mapping a name to a chain. Rejected explicitly rather than ignored, so a caller cannot mistake it for a no-op. |
-
 Every action in OSS's own list is implemented: `resize`, `crop`, `indexcrop`,
 `trim`, `rotate`, `auto-orient`, `blur`, `sharpen`, `pixelate`, `bright`,
 `contrast`, `circle`, `rounded-corners`, `watermark`, `quality`, `format`,
-`interlace`, `info`, `average-hue`.
+`interlace`, `info`, `average-hue`. Saved `style/<name>` presets are configured
+through `ISTORE_STYLES` rather than the OSS console.
 
 ## Additions OSS does not have
 
@@ -172,7 +167,7 @@ about iStore against itself, not about OSS.
 
 | Case | Local mode | Upstream mode |
 |---|---|---|
-| A path that is a directory | `404 NoSuchKey` | Whatever the origin returns. A directory-listing origin answers `200` with its HTML, and the untouched-source endpoint passes it through, because that endpoint is a pass-through by definition. Any `x-oss-process` chain on the same path still gets `422 InvalidImage`. |
+| A path that is a directory | `404 NoSuchKey` | A directory-listing origin may return `200` HTML, which iStore rejects with `415` by default. `ISTORE_PASSTHROUGH_NON_IMAGES=true` restores raw passthrough. |
 | Cache invalidation | Size and mtime are in the key, so an edited file misses immediately | The origin's `ETag`, else `Last-Modified`, is in the key. With neither, the key carries a `ISTORE_UPSTREAM_TTL_SEC` time bucket (300 s), so a replaced object is picked up within one TTL rather than immediately |
 | `info` on a source needing a whole-object read | Bounded by `ISTORE_MAX_SOURCE_BYTES` (100 MiB) | Bounded by `ISTORE_UPSTREAM_INFO_MAX_BYTES` (10 MiB) as well. The ranged path — every JPEG, PNG, GIF and WebP whose header answers — is unaffected and costs one 64 KiB response at any file size |
 | `info` on an origin that ignores `Range` | — | Still one request, still 64 KiB: the `200` body is capped and closed rather than downloaded |
@@ -180,8 +175,9 @@ about iStore against itself, not about OSS.
 | Origin returns 3xx | — | `502`. Redirects are not followed — doing so would hand the choice of destination back to the origin, and passing the 3xx to the client would send it to fetch the unprocessed original |
 | Origin unreachable / times out | — | `502` / `504`. The fetch has its own budget, `ISTORE_UPSTREAM_TIMEOUT_MS` (10 s), separate from `ISTORE_PROCESS_TIMEOUT_MS` |
 | Client `Range` requests | Not supported | Not supported. iStore's own request to the origin is ranged; a client asking iStore for a range still gets the whole object |
-| Watermark objects | Read from the root, cached in memory for the process's life | Fetched from the origin, cached for `ISTORE_UPSTREAM_TTL_SEC`. Either way the cache holds at most 64 watermarks and `ISTORE_WATERMARK_CACHE_BYTES` of them, least-recently-used first out, and concurrent first-time requests for one watermark are collapsed into a single fetch |
-| A `HEAD` of the untouched source | Opens the file, reads nothing | One ranged request for 512 bytes — enough to sniff the format; the length comes from `Content-Range` |
+| Watermarks | Object keys are read from the root | Object keys are fetched from the origin and aged by `ISTORE_UPSTREAM_TTL_SEC`. Object, text and mixed results share a 64-entry / `ISTORE_WATERMARK_CACHE_BYTES` LRU; duplicate builds are coalesced. |
+| A `HEAD` of the untouched source | Opens the file, reads nothing | One ranged request for up to 32 KiB to identify registered image formats (including SVG); the length comes from `Content-Range` |
+| A processed `HEAD` on cache miss | No image encoding; output length omitted | Identity `HEAD` plus a ranged header request; `Content-Type` is sent only when the output format can be determined without decoding |
 | Origin stalls or hangs up mid-object | — | `504` / `502`, the same as a failure on the response headers. A `GET` already streaming when that happens ends as a truncated response, which is what any proxy does once the headers are out |
 
 The error bodies never name the origin or repeat what it said. Which internal

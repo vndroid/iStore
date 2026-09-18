@@ -71,6 +71,12 @@ type Config struct {
 	// CacheDir stores transcoded results. Empty disables caching, which is only
 	// sensible for testing — see the package comment in internal/cache.
 	CacheDir string
+	// PassthroughNonImages allows the original-object endpoint to serve bytes
+	// that are not a registered image format. Disabled by default.
+	PassthroughNonImages bool
+	// StylesFile is a JSON object mapping style names to image processing chains.
+	// It is loaded and validated once at startup; changes require a restart.
+	StylesFile string
 	// MaxSourceBytes rejects source objects larger than this.
 	MaxSourceBytes int64
 
@@ -171,10 +177,11 @@ func NewDefaultConfig() Config {
 
 // Server is the HTTP handler.
 type Server struct {
-	cfg   Config
-	src   source.Source
-	cache *cache.Disk
-	proc  *processing.Processor
+	cfg    Config
+	src    source.Source
+	cache  *cache.Disk
+	proc   *processing.Processor
+	styles map[string]string
 
 	// remote records that src goes over the network. Three things branch on it:
 	// info's whole-object fallback gets its own smaller bound, the cache key
@@ -207,6 +214,10 @@ type Server struct {
 // the same traversal checks on disk, from the same origin over HTTP.
 func New(cfg Config, newProcessor func(auximageprovider.Provider) (*processing.Processor, error)) (*Server, error) {
 	stop := make(chan struct{})
+	styles, err := loadStyles(cfg.StylesFile)
+	if err != nil {
+		return nil, err
+	}
 
 	src, remote, err := newSource(cfg)
 	if err != nil {
@@ -251,6 +262,7 @@ func New(cfg Config, newProcessor func(auximageprovider.Provider) (*processing.P
 		remote:     remote,
 		cache:      c,
 		proc:       proc,
+		styles:     styles,
 		sem:        make(chan struct{}, n),
 		watermarks: watermarks,
 		verifier:   verifier,
@@ -310,7 +322,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	raw := r.URL.Query().Get(ossprocess.QueryKey)
-	chain, err := ossprocess.Parse(raw)
+	// Signatures cover the public alias, not the configured expansion. Keep the
+	// effective chain separate so a style edit changes the cache key on restart.
+	effective, err := expandStyle(raw, s.styles)
+	if err != nil {
+		s.fail(w, r, http.StatusBadRequest, "InvalidArgument", err.Error())
+		return
+	}
+	chain, err := ossprocess.Parse(effective)
 	if err != nil {
 		s.fail(w, r, http.StatusBadRequest, "InvalidArgument", err.Error())
 		return
@@ -335,7 +354,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case chain.IsEmpty():
 		s.serveOriginal(w, r)
 	default:
-		s.serveProcessed(w, r, chain, raw)
+		s.serveProcessed(w, r, chain, effective)
 	}
 }
 
@@ -395,9 +414,9 @@ func (s *Server) failSignature(w http.ResponseWriter, r *http.Request, err error
 
 // ------------------------------------------------------------------ original
 
-// sniffBytes is how much of an object is needed to identify its format. The
-// same window net/http's own sniffer uses.
-const sniffBytes = 512
+// originalSniffBytes uses the detector's full window so an SVG with a long
+// preamble is not mistaken for a non-image in strict mode.
+const originalSniffBytes = 32 << 10
 
 func (s *Server) serveOriginal(w http.ResponseWriter, r *http.Request) {
 	head := r.Method == http.MethodHead
@@ -405,12 +424,12 @@ func (s *Server) serveOriginal(w http.ResponseWriter, r *http.Request) {
 	// A HEAD needs the type and the length, not the object. Asking the source
 	// for a header window rather than the whole thing turns what was a full
 	// origin fetch — every byte of a 40 MB JPEG requested and then discarded —
-	// into a 512-byte ranged response, while still identifying the format from
+	// into a small ranged response, while still identifying the format from
 	// the bytes rather than on the origin's word.
 	var obj *source.Object
 	var err error
 	if head {
-		obj, err = s.src.OpenHeader(r.Context(), r.URL.Path, sniffBytes)
+		obj, err = s.src.OpenHeader(r.Context(), r.URL.Path, originalSniffBytes)
 	} else {
 		obj, err = s.src.Open(r.Context(), r.URL.Path)
 	}
@@ -423,10 +442,16 @@ func (s *Server) serveOriginal(w http.ResponseWriter, r *http.Request) {
 	// Sniffed, not taken from the origin's Content-Type: an origin that labels a
 	// JPEG as application/octet-stream is common, and the bytes are authoritative
 	// either way. Peek leaves them in place for the copy below.
-	if b, perr := obj.Peek(sniffBytes); perr == nil {
-		if t, terr := imagetype.Detect(bytes.NewReader(b), "", ""); terr == nil {
-			w.Header().Set("Content-Type", t.Mime())
-		}
+	b, perr := obj.Peek(originalSniffBytes)
+	if perr != nil {
+		s.failSource(w, r, perr)
+		return
+	}
+	if t, terr := imagetype.Detect(bytes.NewReader(b), "", ""); terr == nil {
+		w.Header().Set("Content-Type", t.Mime())
+	} else if !s.cfg.PassthroughNonImages {
+		s.fail(w, r, http.StatusUnsupportedMediaType, "InvalidArgument", "source is not a supported image")
+		return
 	}
 
 	// A chunked origin gives no length. Leaving the header off lets net/http
@@ -722,6 +747,10 @@ func (s *Server) serveProcessed(w http.ResponseWriter, r *http.Request, chain *o
 			slog.Warn("cache read failed", "error", err)
 		}
 	}
+	if r.Method == http.MethodHead {
+		s.serveProcessedHeadMiss(w, r, chain)
+		return
+	}
 
 	// Collapse duplicate work: a page referencing the same transform twelve
 	// times should cost one encode, not twelve.
@@ -747,6 +776,37 @@ func (s *Server) serveProcessed(w http.ResponseWriter, r *http.Request, chain *o
 	}
 
 	s.writeImageBytes(w, r, out.data, out.mime, status)
+}
+
+// A cache miss on HEAD must not turn into an entire fetch and encode just to
+// discover Content-Length. Only advertise a type when the chain fixes it;
+// otherwise it depends on decoded alpha/animation and encoder preferences.
+func (s *Server) serveProcessedHeadMiss(w http.ResponseWriter, r *http.Request, chain *ossprocess.Chain) {
+	obj, err := s.src.OpenHeader(r.Context(), r.URL.Path, originalSniffBytes)
+	if err != nil {
+		s.failSource(w, r, err)
+		return
+	}
+	defer obj.Close()
+	if overLimit(obj.Size, s.cfg.MaxSourceBytes) {
+		s.failTooLarge(w, r, errSourceTooLarge{size: obj.Size, limit: s.cfg.MaxSourceBytes})
+		return
+	}
+	b, err := obj.Peek(originalSniffBytes)
+	if err != nil {
+		s.failSource(w, r, err)
+		return
+	}
+	if _, err := imagetype.Detect(bytes.NewReader(b), "", ""); err != nil {
+		s.fail(w, r, http.StatusUnprocessableEntity, "InvalidArgument", "source is not a supported image")
+		return
+	}
+	if t, ok := chain.FixedOutputFormat(); ok {
+		w.Header().Set("Content-Type", t.Mime())
+	}
+	w.Header().Set("Cache-Control", s.cfg.CacheControl)
+	w.Header().Set("X-IStore-Cache", "MISS")
+	w.WriteHeader(http.StatusOK)
 }
 
 // cacheKey builds the entry key from a source's identity.

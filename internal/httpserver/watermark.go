@@ -3,8 +3,11 @@ package httpserver
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"math"
 	"net/http"
@@ -66,9 +69,9 @@ type watermarkProvider struct {
 	cacheBytes    int64 // every retained watermark, added together
 
 	// Image watermarks repeat across requests far more than sources do — a site
-	// usually has one — so they are held in memory after the first read, keyed
-	// by the object path. Nothing built from `text_` goes in here: see
-	// cacheable.
+	// usually has one — so they are held in memory after the first read. Plain
+	// object watermarks use their path as key; text and mixed ones use a digest
+	// of every rendering parameter. The count and byte budgets bound either.
 	//
 	// ttl is zero for a local source, whose entries never expire: a watermark
 	// read off disk is as current as the disk. For an upstream source it is not
@@ -181,24 +184,18 @@ func readWatermarkSpec(o *options.Options) watermarkSpec {
 	}
 }
 
-// cacheable reports whether the image built from this spec may be held in the
-// in-memory map.
-//
-// Only a plain object-key watermark is. Its key is the object path, so the set
-// of possible keys is the set of files under the root — a bound the deployment
-// already accepts.
-//
-// A text watermark is not, and this is the whole point of the method. `text_`,
-// `type_`, `color_`, `size_`, `shadow_` and `rotate_` are free parameters of the
-// request, so a key built from them is chosen by whoever is calling: a loop over
-// `watermark,text_<random>` would grow the map until the process is killed, from
-// an unauthenticated GET. Rendering a line of Pango text costs a few hundred
-// microseconds, which is not worth a cache whose size a stranger picks.
-func (s watermarkSpec) cacheable() bool { return s.text == "" }
-
-// cacheKey identifies a cacheable image. Only ever called when cacheable() is
-// true, so the object path is the entire key.
-func (s watermarkSpec) cacheKey() string { return s.path }
+// cacheKey identifies the rendered bytes, not just the requested object. Text
+// is hashed so a caller cannot fill the bounded map with large key strings.
+func (s watermarkSpec) cacheKey() string {
+	if s.text == "" {
+		return "image:" + s.path
+	}
+	h := sha256.New()
+	fmt.Fprintf(h, "%q/%q/%q/%s/%d/%.17g/%d/%d/%d/%d",
+		s.path, s.text, s.font, s.color.String(), s.size, s.shadow,
+		s.rotate, s.order, s.align, s.interval)
+	return "text:" + hex.EncodeToString(h.Sum(nil))
+}
 
 // Get implements auximageprovider.Provider.
 func (p *watermarkProvider) Get(ctx context.Context, o *options.Options) (imagedata.ImageData, http.Header, error) {
@@ -206,16 +203,6 @@ func (p *watermarkProvider) Get(ctx context.Context, o *options.Options) (imaged
 	if spec.path == "" && spec.text == "" {
 		// No watermark requested. The pipeline treats a nil image as "skip".
 		return nil, nil, nil
-	}
-
-	if !spec.cacheable() {
-		// Built fresh and handed straight to the caller, who closes it. Nothing
-		// is retained, so nothing accumulates.
-		d, err := p.build(ctx, spec)
-		if err != nil {
-			return nil, nil, err
-		}
-		return d, make(http.Header), nil
 	}
 
 	key := spec.cacheKey()
@@ -516,7 +503,10 @@ func (p *watermarkProvider) renderTextChecked(spec watermarkSpec) (*vips.Image, 
 	// Pango sizes in points; at 72 dpi a point is a pixel, which is what OSS's
 	// `size_` means.
 	img, err := vips.NewText(vips.TextOptions{
-		Text:          spec.text,
+		// OSS text is literal text. libvips accepts Pango markup, so passing
+		// user input through unchanged would let a span override the checked
+		// size and allocate a much larger canvas before checkCanvas runs.
+		Text:          html.EscapeString(spec.text),
 		Font:          fmt.Sprintf("%s %d", spec.font, spec.size),
 		DPI:           72,
 		Color:         spec.color,
