@@ -139,7 +139,17 @@ func parseWatermark(a Action) (*Watermark, error) {
 		case "type":
 			var name string
 			if name, err = decodeOSSKey(p, "type"); err == nil {
-				w.Font = resolveFont(name)
+				// A font identifier is one family name, or a short fallback
+				// list. Bounding it here is not cosmetic: the string is fed
+				// verbatim into a Pango font description, and Pango parses that
+				// in cgo — where the request's ProcessTimeout, being a Go
+				// context, cannot preempt it. An 800 KB type_ value was
+				// measured spending >30s inside vips_text before returning,
+				// unbounded by the pixel budget because the rendered glyphs
+				// stay tiny. Reject it before it ever reaches the C call.
+				if err = checkFontLen(name); err == nil {
+					w.Font = resolveFont(name)
+				}
 			}
 		case "color":
 			w.Color, err = parseHexColor(p.Value)
@@ -247,6 +257,19 @@ func (w *Watermark) validate(seen map[string]bool) error {
 		}
 	}
 
+	return nil
+}
+
+// maxFontBytes bounds a watermark's type_ value. A Pango font description —
+// even a generous multi-family fallback list with a weight and size — is well
+// under this; the cap exists only to keep a pathological string out of the C
+// text renderer, so it is set far above any real font identifier.
+const maxFontBytes = 256
+
+func checkFontLen(name string) error {
+	if len(name) > maxFontBytes {
+		return fmt.Errorf("\"watermark\" type is %d bytes, limit is %d", len(name), maxFontBytes)
+	}
 	return nil
 }
 

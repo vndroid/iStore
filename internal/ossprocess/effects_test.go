@@ -2,6 +2,7 @@ package ossprocess
 
 import (
 	"encoding/base64"
+	"strings"
 	"testing"
 
 	"github.com/vndroid/istore/internal/imagetype"
@@ -511,5 +512,49 @@ func TestInterlace(t *testing.T) {
 				t.Errorf("Validate(%q): expected an error", raw)
 			}
 		}
+	}
+}
+
+// TestWatermarkFontLengthBounded guards the fix for an unbounded type_ value.
+//
+// The font string is fed verbatim into a Pango font description, which Pango
+// parses inside cgo — where a request's ProcessTimeout cannot preempt it. An
+// 800 KB type_ value was measured spending over thirty seconds inside the C
+// text renderer before returning, and the pixel budget never caught it because
+// the glyphs it produced stayed tiny. So the length is bounded at parse time,
+// which is the only place a reject happens before the C call.
+func TestWatermarkFontLengthBounded(t *testing.T) {
+	// parseWatermark runs during Validate, so a full check is Parse + Validate,
+	// the same shape TestWatermarkRejects uses.
+	validate := func(font string) error {
+		c, err := Parse("image/watermark,text_" + b64url("hi") + ",type_" + b64url(font))
+		if err != nil {
+			return err
+		}
+		return c.Validate()
+	}
+
+	// A generous but realistic fallback list is accepted.
+	ok := "WenQuanYi Zen Hei, Noto Sans CJK SC, DejaVu Sans, sans-serif Bold"
+	if err := validate(ok); err != nil {
+		t.Errorf("a %d-byte font list was refused: %v", len(ok), err)
+	}
+
+	// A pathological one is refused, and by the length check specifically.
+	huge := strings.Repeat("sans,", 120000) // ~600 KB, the measured attack
+	err := validate(huge)
+	if err == nil {
+		t.Fatalf("a %d-byte font value was accepted", len(huge))
+	}
+	if !strings.Contains(err.Error(), "type") {
+		t.Errorf("error = %q, want it to name the type_ length", err)
+	}
+
+	// Exactly at the cap is fine; one byte over is not.
+	if err := validate(strings.Repeat("a", maxFontBytes)); err != nil {
+		t.Errorf("a font of exactly %d bytes was refused: %v", maxFontBytes, err)
+	}
+	if err := validate(strings.Repeat("a", maxFontBytes+1)); err == nil {
+		t.Errorf("a font of %d bytes was accepted, cap is %d", maxFontBytes+1, maxFontBytes)
 	}
 }
