@@ -107,6 +107,7 @@ func run() error {
 	hc.ProcessTimeout = time.Duration(envInt("ISTORE_PROCESS_TIMEOUT_MS", int(hc.ProcessTimeout/time.Millisecond))) * time.Millisecond
 	hc.CacheControl = env("ISTORE_CACHE_CONTROL", hc.CacheControl)
 	hc.Verifier = checker
+	hc.HeaderChecker = checker
 	hc.Evict = cache.EvictConfig{
 		MaxBytes: int64(envInt("ISTORE_CACHE_MAX_BYTES", 0)),
 		MaxAge:   time.Duration(envInt("ISTORE_CACHE_MAX_AGE_HOURS", 0)) * time.Hour,

@@ -1,6 +1,11 @@
 package httpserver
 
 import (
+	"bytes"
+	"encoding/binary"
+	"image"
+	"image/color"
+	"image/gif"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,8 +14,20 @@ import (
 	"testing"
 
 	"github.com/vndroid/istore/internal/auximageprovider"
+	"github.com/vndroid/istore/internal/ossprocess"
 	"github.com/vndroid/istore/internal/processing"
+	"github.com/vndroid/istore/internal/security"
+	"github.com/vndroid/istore/internal/singleflight"
 )
+
+func TestRecoveredFlightPanicIsHTTP500(t *testing.T) {
+	w := httptest.NewRecorder()
+	(&Server{}).failProcess(w, httptest.NewRequest(http.MethodGet, "/x.jpg", nil),
+		singleflight.PanicError{Value: "boom"})
+	if w.Code != http.StatusInternalServerError || strings.Contains(w.Body.String(), "boom") {
+		t.Fatalf("status = %d, body = %q", w.Code, w.Body.String())
+	}
+}
 
 func TestProcessedHeadMissSkipsEncoding(t *testing.T) {
 	dir := t.TempDir()
@@ -105,5 +122,93 @@ func TestUpstreamOriginalRejectsHTML(t *testing.T) {
 		if w.Code != http.StatusUnsupportedMediaType {
 			t.Errorf("upstream %s: status = %d, want 415", method, w.Code)
 		}
+	}
+}
+
+func newHeadCheckedServer(t *testing.T, root string) *Server {
+	t.Helper()
+	c := security.NewDefaultConfig()
+	checker, err := security.New(&c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := New(Config{Root: root, MaxSourceBytes: 100 << 20, HeaderChecker: checker},
+		func(auximageprovider.Provider) (*processing.Processor, error) { return nil, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+func TestProcessedHeadPreflightRejectsKnownBadHeaders(t *testing.T) {
+	dir := t.TempDir()
+	png := make([]byte, 33)
+	copy(png, "\x89PNG\r\n\x1a\n")
+	copy(png[12:], "IHDR")
+	binary.BigEndian.PutUint32(png[16:], 20_000)
+	binary.BigEndian.PutUint32(png[20:], 12_600)
+	if err := os.WriteFile(filepath.Join(dir, "huge.png"), png, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "broken.jpg"),
+		[]byte{0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10}, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := newHeadCheckedServer(t, dir)
+	for _, path := range []string{"/huge.png", "/broken.jpg"} {
+		w := httptest.NewRecorder()
+		chain, err := ossprocess.Parse("image/resize,w_1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		s.serveProcessedHeadMiss(w, httptest.NewRequest(http.MethodHead, path, nil), chain)
+		if w.Code != http.StatusUnprocessableEntity {
+			t.Errorf("%s: HEAD status = %d, want 422", path, w.Code)
+		}
+	}
+}
+
+func TestProcessedHeadKeepsLongButValidJPEGHeaderOptimistic(t *testing.T) {
+	dir := t.TempDir()
+	base := testJPEG(t, 20, 20, 0)
+	app := make([]byte, 32760)
+	app[0], app[1] = 0xff, 0xe2
+	binary.BigEndian.PutUint16(app[2:], uint16(len(app)-2))
+	long := append(append(append([]byte{}, base[:2]...), app...), base[2:]...)
+	if err := os.WriteFile(filepath.Join(dir, "long.jpg"), long, 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := newHeadCheckedServer(t, dir)
+	chain, _ := ossprocess.Parse("image/resize,w_10")
+	w := httptest.NewRecorder()
+	s.serveProcessedHeadMiss(w, httptest.NewRequest(http.MethodHead, "/long.jpg", nil), chain)
+	if w.Code != http.StatusOK {
+		t.Errorf("long JPEG header: HEAD status = %d, want optimistic 200", w.Code)
+	}
+}
+
+func TestProcessedHeadRejectsKnownExcessFrames(t *testing.T) {
+	dir := t.TempDir()
+	pal := color.Palette{color.Black, color.White}
+	g := &gif.GIF{}
+	for range 400 {
+		frame := image.NewPaletted(image.Rect(0, 0, 1, 1), pal)
+		g.Image = append(g.Image, frame)
+		g.Delay = append(g.Delay, 1)
+	}
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, g); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "many.gif"), buf.Bytes(), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := newHeadCheckedServer(t, dir)
+	chain, _ := ossprocess.Parse("image/resize,w_1/format,webp")
+	w := httptest.NewRecorder()
+	s.serveProcessedHeadMiss(w, httptest.NewRequest(http.MethodHead, "/many.gif", nil), chain)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("400-frame GIF: HEAD status = %d, want 422", w.Code)
 	}
 }

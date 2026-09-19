@@ -1,6 +1,8 @@
 package httpserver
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -256,6 +258,23 @@ func TestCacheKeyFallsBackToATimeBucket(t *testing.T) {
 	d := s.cacheKey(info, "c")
 	if c.Hash() == d.Hash() {
 		t.Error("the bucket did not advance: an expired entry would never be refetched")
+	}
+}
+
+func TestMissingOriginValidatorWarnsOnce(t *testing.T) {
+	var logs bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	s := newUpstreamServer(t, "http://origin", 100<<20, 10<<20)
+	info := &source.Info{Key: "http://origin/x.jpg", Size: 10}
+	s.cacheKey(info, "a")
+	s.cacheKey(info, "b")
+
+	const message = "upstream sent neither ETag nor Last-Modified"
+	if got := strings.Count(logs.String(), message); got != 1 {
+		t.Fatalf("warning count = %d, want 1; logs: %s", got, logs.String())
 	}
 }
 

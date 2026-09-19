@@ -80,15 +80,27 @@ func (s *Checker) CheckDimensions(o *options.Options, width, height, frames int)
 	maxFrameRes := s.MaxAnimationFrameResolution(o)
 
 	if frames > 1 && maxFrameRes > 0 {
-		if width*height > maxFrameRes {
+		if exceedsPixelLimit(width, height, 1, maxFrameRes) {
 			return newImageResolutionError("Source image frame resolution is too big")
 		}
 		return nil
 	}
 
-	if width*height*frames > s.MaxSrcResolution(o) {
+	if exceedsPixelLimit(width, height, frames, s.MaxSrcResolution(o)) {
 		return newImageResolutionError("Source image resolution is too big")
 	}
 
 	return nil
+}
+
+// Compare by division before multiplication: dimensions and frame counts come
+// from untrusted headers, and a wrapped product could pass the pixel budget.
+func exceedsPixelLimit(width, height, frames, limit int) bool {
+	if width <= 0 || height <= 0 || frames <= 0 || limit <= 0 {
+		return true
+	}
+	if width > limit/height {
+		return true
+	}
+	return frames > limit/(width*height)
 }

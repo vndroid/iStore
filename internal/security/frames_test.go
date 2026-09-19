@@ -1,6 +1,7 @@
 package security
 
 import (
+	"math"
 	"net/http"
 	"strings"
 	"testing"
@@ -8,6 +9,32 @@ import (
 	"github.com/vndroid/istore/internal/options"
 	"github.com/vndroid/istore/internal/options/keys"
 )
+
+func TestPixelBudgetRejectsOverflowingHeaders(t *testing.T) {
+	c := NewDefaultConfig()
+	c.MaxSrcResolution = 250_000_000
+	checker, err := New(&c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := options.New()
+	for _, tc := range []struct {
+		name          string
+		width, height int
+		frames        int
+	}{
+		{"product overflow", math.MaxInt, math.MaxInt, math.MaxInt},
+		{"wide", math.MaxInt, 2, 1},
+		{"zero width", 0, 100, 1},
+		{"zero height", 100, 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := checker.CheckDimensions(o, tc.width, tc.height, tc.frames); err == nil {
+				t.Fatal("untrusted dimensions passed the pixel budget")
+			}
+		})
+	}
+}
 
 func framesChecker(t *testing.T, limit int) *Checker {
 	t.Helper()

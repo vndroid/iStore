@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"runtime"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/vndroid/istore/internal/auximageprovider"
@@ -104,6 +105,17 @@ type Config struct {
 	// Verifier checks request signatures. Nil, or one that reports signing is
 	// unconfigured, serves every request unsigned.
 	Verifier SignatureVerifier
+	// HeaderChecker applies source limits when a cold HEAD can determine the
+	// geometry from its bounded header window.
+	HeaderChecker HeaderChecker
+}
+
+// HeaderChecker is the subset of the processing security policy needed by a
+// cheap processed HEAD. *security.Checker implements it.
+type HeaderChecker interface {
+	MaxAnimationFrames(*options.Options) int
+	CheckAnimationFrames(*options.Options, int) error
+	CheckDimensions(*options.Options, int, int, int) error
 }
 
 // SignatureVerifier checks that a request was issued by someone holding the
@@ -188,6 +200,8 @@ type Server struct {
 	// falls back to a time bucket when the origin sends no validator, and the
 	// watermark map expires.
 	remote bool
+	// Warn once after the first successful stat without an origin validator.
+	noValidatorWarn sync.Once
 
 	// sem bounds concurrent encodes. libvips is happy to use every core for one
 	// image; letting N requests each do that turns a small box into a queue with
@@ -801,12 +815,55 @@ func (s *Server) serveProcessedHeadMiss(w http.ResponseWriter, r *http.Request, 
 		s.fail(w, r, http.StatusUnprocessableEntity, "InvalidArgument", "source is not a supported image")
 		return
 	}
+	if !s.preflightProcessedHead(w, r, obj, b, chain) {
+		return
+	}
 	if t, ok := chain.FixedOutputFormat(); ok {
 		w.Header().Set("Content-Type", t.Mime())
 	}
 	w.Header().Set("Cache-Control", s.cfg.CacheControl)
 	w.Header().Set("X-IStore-Cache", "MISS")
 	w.WriteHeader(http.StatusOK)
+}
+
+// preflightProcessedHead rejects only facts established by the available
+// prefix. A missing JPEG SOF is not a failure while source bytes remain, and
+// an incomplete GIF count is only a lower bound.
+func (s *Server) preflightProcessedHead(w http.ResponseWriter, r *http.Request, obj *source.Object, header []byte, chain *ossprocess.Chain) bool {
+	info, err := imageinfo.Read(bytes.NewReader(header), obj.Size)
+	if err != nil {
+		if info != nil && info.Format == imagetype.JPEG &&
+			errors.Is(err, imageinfo.ErrHeaderTooShort) &&
+			obj.Size >= 0 && obj.Size <= int64(len(header)) {
+			s.fail(w, r, http.StatusUnprocessableEntity, "InvalidImage", "the JPEG header is incomplete")
+			return false
+		}
+		return true
+	}
+	if info == nil || s.cfg.HeaderChecker == nil || info.ImageWidth <= 0 || info.ImageHeight <= 0 {
+		return true
+	}
+	o := options.New()
+	if err := chain.Apply(o, info.ImageWidth, info.ImageHeight, info.Format); err != nil {
+		s.failProcess(w, r, err)
+		return false
+	}
+	frames := 1
+	outFormat := options.Get(o, keys.Format, imagetype.Unknown)
+	if outFormat.SupportsAnimationSave() && info.FrameCount > 1 && s.cfg.HeaderChecker.MaxAnimationFrames(o) > 1 {
+		if err := s.cfg.HeaderChecker.CheckAnimationFrames(o, info.FrameCount); err != nil {
+			s.failProcess(w, r, err)
+			return false
+		}
+		frames = info.FrameCount
+	}
+	if !info.Format.IsVector() {
+		if err := s.cfg.HeaderChecker.CheckDimensions(o, info.ImageWidth, info.ImageHeight, frames); err != nil {
+			s.failProcess(w, r, err)
+			return false
+		}
+	}
+	return true
 }
 
 // cacheKey builds the entry key from a source's identity.
@@ -841,6 +898,10 @@ func (s *Server) cacheKey(info *source.Info, chain string) cache.Key {
 	if ttl <= 0 {
 		ttl = DefaultUpstreamTTL
 	}
+	s.noValidatorWarn.Do(func() {
+		slog.Warn("upstream sent neither ETag nor Last-Modified; transformed results use TTL-based cache keys",
+			"ttl", ttl)
+	})
 	k.SourceVersion = "ttl:" + strconv.FormatInt(time.Now().UnixNano()/int64(ttl), 10)
 	return k
 }
@@ -1109,6 +1170,12 @@ func (s *Server) failSource(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 func (s *Server) failProcess(w http.ResponseWriter, r *http.Request, err error) {
+	var panicErr singleflight.PanicError
+	if errors.As(err, &panicErr) {
+		slog.Error("coalesced image processing panicked", "path", r.URL.Path, "error", err)
+		s.fail(w, r, http.StatusInternalServerError, "InternalError", "image processing failed")
+		return
+	}
 	// An argument the parser could only check against the source (indexcrop's
 	// slice index) is still the caller's mistake, so it gets 400 and the real
 	// message rather than a generic "could not be processed".

@@ -90,6 +90,8 @@ same-size update within its timestamp granularity, and suppresses the TTL
 fallback. The same TTL ages the in-memory watermark map, which
 has no validator of its own; its size is bounded separately — see
 [Watermark limits](#watermark-limits).
+The server logs one warning on the first upstream object that supplies neither
+validator, so a deployment does not enter TTL-only invalidation silently.
 
 **Signing matters more here.** Unsigned local mode exposes a directory. Unsigned
 upstream mode lets anyone who can reach the port drive arbitrary transform
@@ -114,7 +116,9 @@ it gets a one-byte ranged `GET` instead.
 For a transformed `HEAD`, a warm cache returns the exact output length and
 type. On a miss, iStore checks only the source header: it omits
 `Content-Length`, and omits `Content-Type` when the output format depends on
-decoded image properties (including `format,auto` on animated input).
+decoded image properties (including `format,auto` on animated input). Limits
+that can be proved from the bounded header are enforced, but a long JPEG/GIF or
+a decoder-specific failure can remain optimistic until the corresponding GET.
 
 ### Supported actions
 
@@ -1137,9 +1141,11 @@ and the info fallbacks. Most of those packages are pure logic and need no
 libvips, which is deliberate — see the note on `Validate` vs `CheckEncoders`
 below.
 
-`internal/vips` is the exception, and has to be: its tests are claims about the
-library this binary was linked against, and no reading of the source can settle
-them. They check that a TIFF loads, that the argument lookup the TIFF guard
+`internal/vips`, `internal/processing`, and `internal/httpserver` are the
+exceptions, and have to be: their tests initialize the real libvips and fail
+the test process when it is unavailable rather than silently skipping broad
+coverage. CI must install the libvips development package and `pkg-config`.
+They check that a TIFF loads, that the argument lookup the TIFF guard
 rests on answers correctly, and that the encoder probe agrees with a real encode
 at a size no encoder treats specially. The pixel-level checks above are still not
 in there: they need real images, and they were run by hand.

@@ -95,7 +95,8 @@ The pixel budget matches OSS deliberately; the rest are iStore's own.
 | Limit | OSS | iStore default | Environment variable |
 |---|---|---|---|
 | Total pixels (`width × height × frames`) | 250,000,000 | 250,000,000 | `ISTORE_MAX_SRC_RESOLUTION` |
-| Single dimension | 30,000 px | unbounded | `ISTORE_MAX_RESULT_DIMENSION` |
+| Source single dimension | 30,000 px | unbounded; the pixel budget still applies | — |
+| Output single dimension | — | scaling is reduced to fit the configured bound | `ISTORE_MAX_RESULT_DIMENSION` |
 | Single dimension for `rotate` | 4,096 px | unbounded — a 5000 px source rotates fine | — |
 | Animation frames | pixel budget only | 300 | `ISTORE_MAX_ANIMATION_FRAMES` |
 | Source file size | — | 100 MiB | `ISTORE_MAX_SOURCE_BYTES` |
@@ -177,7 +178,7 @@ about iStore against itself, not about OSS.
 | Client `Range` requests | Not supported | Not supported. iStore's own request to the origin is ranged; a client asking iStore for a range still gets the whole object |
 | Watermarks | Object keys are read from the root | Object keys are fetched from the origin and aged by `ISTORE_UPSTREAM_TTL_SEC`. Object, text and mixed results share a 64-entry / `ISTORE_WATERMARK_CACHE_BYTES` LRU; duplicate builds are coalesced. |
 | A `HEAD` of the untouched source | Opens the file, reads nothing | One ranged request for up to 32 KiB to identify registered image formats (including SVG); the length comes from `Content-Range` |
-| A processed `HEAD` on cache miss | No image encoding; output length omitted | Identity `HEAD` plus a ranged header request; `Content-Type` is sent only when the output format can be determined without decoding |
+| A processed `HEAD` on cache miss | No image encoding; output length omitted | Identity `HEAD` plus a ranged header request; known header-level size/frame violations are rejected, while failures that require a full decode remain optimistic; `Content-Type` is sent only when the output format can be determined without decoding |
 | Origin stalls or hangs up mid-object | — | `504` / `502`, the same as a failure on the response headers. A `GET` already streaming when that happens ends as a truncated response, which is what any proxy does once the headers are out |
 
 The error bodies never name the origin or repeat what it said. Which internal

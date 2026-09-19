@@ -9,12 +9,22 @@
 // of the same file, each ~150 ms of CPU, all producing identical bytes.
 package singleflight
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+)
+
+// PanicError is a recovered execution panic shared with all callers of its
+// flight. Callers should treat it as an internal failure, never bad input.
+type PanicError struct{ Value any }
+
+func (e PanicError) Error() string { return fmt.Sprintf("singleflight: work panicked: %v", e.Value) }
 
 type call struct {
-	wg  sync.WaitGroup
-	val any
-	err error
+	wg   sync.WaitGroup
+	val  any
+	err  error
+	dups int
 }
 
 // Group collapses duplicate calls.
@@ -32,6 +42,7 @@ func (g *Group) Do(key string, fn func() (any, error)) (v any, err error, shared
 		g.m = make(map[string]*call)
 	}
 	if c, ok := g.m[key]; ok {
+		c.dups++
 		g.mu.Unlock()
 		c.wg.Wait()
 		return c.val, c.err, true
@@ -41,9 +52,14 @@ func (g *Group) Do(key string, fn func() (any, error)) (v any, err error, shared
 	g.m[key] = c
 	g.mu.Unlock()
 
-	// A panic in fn must not leave every waiter blocked forever, so the map
-	// entry is removed and the WaitGroup released on the way out either way.
+	// A panic must become one shared error. Merely releasing the waiters with a
+	// nil value would make every caller panic again on its result assertion.
 	defer func() {
+		if p := recover(); p != nil {
+			c.val = nil
+			c.err = PanicError{Value: p}
+			v, err = nil, c.err
+		}
 		g.mu.Lock()
 		delete(g.m, key)
 		g.mu.Unlock()
