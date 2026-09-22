@@ -762,7 +762,7 @@ func (s *Server) serveProcessed(w http.ResponseWriter, r *http.Request, chain *o
 		}
 	}
 	if r.Method == http.MethodHead {
-		s.serveProcessedHeadMiss(w, r, chain)
+		s.serveProcessedHeadMiss(w, r, chain, negotiated)
 		return
 	}
 
@@ -795,7 +795,7 @@ func (s *Server) serveProcessed(w http.ResponseWriter, r *http.Request, chain *o
 // A cache miss on HEAD must not turn into an entire fetch and encode just to
 // discover Content-Length. Only advertise a type when the chain fixes it;
 // otherwise it depends on decoded alpha/animation and encoder preferences.
-func (s *Server) serveProcessedHeadMiss(w http.ResponseWriter, r *http.Request, chain *ossprocess.Chain) {
+func (s *Server) serveProcessedHeadMiss(w http.ResponseWriter, r *http.Request, chain *ossprocess.Chain, negotiated imagetype.Type) {
 	obj, err := s.src.OpenHeader(r.Context(), r.URL.Path, originalSniffBytes)
 	if err != nil {
 		s.failSource(w, r, err)
@@ -815,7 +815,7 @@ func (s *Server) serveProcessedHeadMiss(w http.ResponseWriter, r *http.Request, 
 		s.fail(w, r, http.StatusUnprocessableEntity, "InvalidArgument", "source is not a supported image")
 		return
 	}
-	if !s.preflightProcessedHead(w, r, obj, b, chain) {
+	if !s.preflightProcessedHead(w, r, obj, b, chain, negotiated) {
 		return
 	}
 	if t, ok := chain.FixedOutputFormat(); ok {
@@ -829,7 +829,7 @@ func (s *Server) serveProcessedHeadMiss(w http.ResponseWriter, r *http.Request, 
 // preflightProcessedHead rejects only facts established by the available
 // prefix. A missing JPEG SOF is not a failure while source bytes remain, and
 // an incomplete GIF count is only a lower bound.
-func (s *Server) preflightProcessedHead(w http.ResponseWriter, r *http.Request, obj *source.Object, header []byte, chain *ossprocess.Chain) bool {
+func (s *Server) preflightProcessedHead(w http.ResponseWriter, r *http.Request, obj *source.Object, header []byte, chain *ossprocess.Chain, negotiated imagetype.Type) bool {
 	info, err := imageinfo.Read(bytes.NewReader(header), obj.Size)
 	if err != nil {
 		if info != nil && info.Format == imagetype.JPEG &&
@@ -848,9 +848,17 @@ func (s *Server) preflightProcessedHead(w http.ResponseWriter, r *http.Request, 
 		s.failProcess(w, r, err)
 		return false
 	}
+	if chain.IsAutoFormat() {
+		setAutoFormat(o, info.Format, negotiated)
+	}
+	// A format the operator has GET pass through untouched is never measured,
+	// so refusing it here would be refusing something GET serves.
+	if s.proc != nil && s.proc.SkipsProcessing(o, info.Format) {
+		return true
+	}
 	frames := 1
-	outFormat := options.Get(o, keys.Format, imagetype.Unknown)
-	if outFormat.SupportsAnimationSave() && info.FrameCount > 1 && s.cfg.HeaderChecker.MaxAnimationFrames(o) > 1 {
+	if info.FrameCount > 1 && s.cfg.HeaderChecker.MaxAnimationFrames(o) > 1 &&
+		decodesAnimation(info.Format) && s.producesAnimation(o, info.Format) {
 		if err := s.cfg.HeaderChecker.CheckAnimationFrames(o, info.FrameCount); err != nil {
 			s.failProcess(w, r, err)
 			return false
@@ -864,6 +872,28 @@ func (s *Server) preflightProcessedHead(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 	return true
+}
+
+// producesAnimation asks the processor whether GET would write this source as
+// an animation. That depends on more than a named format — with none, or with
+// format,auto, it follows the source and ISTORE_PREFERRED_FORMATS — so the
+// processor answers rather than a second copy of its rules living here. The
+// fallback, for a server built without a processor, only trusts a named format.
+func (s *Server) producesAnimation(o *options.Options, source imagetype.Type) bool {
+	if s.proc != nil {
+		return s.proc.ProducesAnimation(o, source)
+	}
+	return options.Get(o, keys.Format, imagetype.Unknown).SupportsAnimationSave()
+}
+
+// decodesAnimation reports whether libvips reads a container's frames. Only for
+// those does GET hold the source to the frame cap and multiply its pixel budget
+// by the frame count. APNG is the case that matters: iStore's header parser sees
+// its frames and this libvips does not, so GET treats it as a still (or refuses
+// it for a different reason), and counting its frames here could refuse what
+// GET would serve.
+func decodesAnimation(t imagetype.Type) bool {
+	return t == imagetype.GIF || t == imagetype.WEBP
 }
 
 // cacheKey builds the entry key from a source's identity.
@@ -951,16 +981,7 @@ func (s *Server) process(ctx context.Context, urlPath string, chain *ossprocess.
 		return nil, err
 	}
 	if chain.IsAutoFormat() {
-		if negotiated == imagetype.Unknown {
-			// With no acceptable modern format, format,auto means preserve the
-			// source format rather than fall through to process-wide preferences
-			// — but only when this build can write it.
-			if f := autoFallbackFormat(src.Format(), vips.SupportsSave); f != imagetype.Unknown {
-				o.Set(keys.Format, f)
-			}
-		} else {
-			applyAutoFormat(o, negotiated)
-		}
+		setAutoFormat(o, src.Format(), negotiated)
 	}
 
 	s.acquire()
@@ -977,6 +998,21 @@ func (s *Server) process(ctx context.Context, urlPath string, chain *ossprocess.
 	out := append([]byte(nil), imagedata.Bytes(res.OutData)...)
 
 	return &processed{data: out, mime: res.OutData.Format().Mime()}, nil
+}
+
+// setAutoFormat resolves format,auto for one request. The processed HEAD calls
+// it too, so that what it predicts about the output is what GET will encode.
+func setAutoFormat(o *options.Options, source, negotiated imagetype.Type) {
+	if negotiated == imagetype.Unknown {
+		// With no acceptable modern format, format,auto means preserve the
+		// source format rather than fall through to process-wide preferences
+		// — but only when this build can write it.
+		if f := autoFallbackFormat(source, vips.SupportsSave); f != imagetype.Unknown {
+			o.Set(keys.Format, f)
+		}
+		return
+	}
+	applyAutoFormat(o, negotiated)
 }
 
 // sourceSize reads the source's pixel dimensions as cheaply as the format
@@ -1172,7 +1208,8 @@ func (s *Server) failSource(w http.ResponseWriter, r *http.Request, err error) {
 func (s *Server) failProcess(w http.ResponseWriter, r *http.Request, err error) {
 	var panicErr singleflight.PanicError
 	if errors.As(err, &panicErr) {
-		slog.Error("coalesced image processing panicked", "path", r.URL.Path, "error", err)
+		slog.Error("coalesced image processing panicked", "path", r.URL.Path, "error", err,
+			"stack", string(panicErr.Stack))
 		s.fail(w, r, http.StatusInternalServerError, "InternalError", "image processing failed")
 		return
 	}

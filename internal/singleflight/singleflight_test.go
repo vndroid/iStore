@@ -2,6 +2,7 @@ package singleflight
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -100,3 +101,19 @@ func TestDoPanicReturnsOneSharedError(t *testing.T) {
 		t.Fatalf("retry = (%v, %v, %v), want (7, nil, false)", v, err, shared)
 	}
 }
+
+// Recovering the panic is what stops net/http from logging its stack, so the
+// error has to carry one or the log line says what panicked but not where.
+func TestPanicErrorCarriesTheStack(t *testing.T) {
+	var g Group
+	_, err, _ := g.Do("k", func() (any, error) { panicsForStackTest(); return nil, nil })
+	var panicErr PanicError
+	if !errors.As(err, &panicErr) {
+		t.Fatalf("error = %#v, want PanicError", err)
+	}
+	if !strings.Contains(string(panicErr.Stack), "panicsForStackTest") {
+		t.Fatalf("stack does not name the panicking function:\n%s", panicErr.Stack)
+	}
+}
+
+func panicsForStackTest() { panic("where") }

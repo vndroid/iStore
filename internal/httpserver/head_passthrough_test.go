@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/vndroid/istore/internal/auximageprovider"
+	"github.com/vndroid/istore/internal/imagetype"
 	"github.com/vndroid/istore/internal/ossprocess"
 	"github.com/vndroid/istore/internal/processing"
 	"github.com/vndroid/istore/internal/security"
@@ -162,7 +163,7 @@ func TestProcessedHeadPreflightRejectsKnownBadHeaders(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		s.serveProcessedHeadMiss(w, httptest.NewRequest(http.MethodHead, path, nil), chain)
+		s.serveProcessedHeadMiss(w, httptest.NewRequest(http.MethodHead, path, nil), chain, imagetype.Unknown)
 		if w.Code != http.StatusUnprocessableEntity {
 			t.Errorf("%s: HEAD status = %d, want 422", path, w.Code)
 		}
@@ -182,7 +183,7 @@ func TestProcessedHeadKeepsLongButValidJPEGHeaderOptimistic(t *testing.T) {
 	s := newHeadCheckedServer(t, dir)
 	chain, _ := ossprocess.Parse("image/resize,w_10")
 	w := httptest.NewRecorder()
-	s.serveProcessedHeadMiss(w, httptest.NewRequest(http.MethodHead, "/long.jpg", nil), chain)
+	s.serveProcessedHeadMiss(w, httptest.NewRequest(http.MethodHead, "/long.jpg", nil), chain, imagetype.Unknown)
 	if w.Code != http.StatusOK {
 		t.Errorf("long JPEG header: HEAD status = %d, want optimistic 200", w.Code)
 	}
@@ -207,7 +208,7 @@ func TestProcessedHeadRejectsKnownExcessFrames(t *testing.T) {
 	s := newHeadCheckedServer(t, dir)
 	chain, _ := ossprocess.Parse("image/resize,w_1/format,webp")
 	w := httptest.NewRecorder()
-	s.serveProcessedHeadMiss(w, httptest.NewRequest(http.MethodHead, "/many.gif", nil), chain)
+	s.serveProcessedHeadMiss(w, httptest.NewRequest(http.MethodHead, "/many.gif", nil), chain, imagetype.Unknown)
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Errorf("400-frame GIF: HEAD status = %d, want 422", w.Code)
 	}

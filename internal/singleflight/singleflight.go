@@ -11,12 +11,20 @@ package singleflight
 
 import (
 	"fmt"
+	"runtime/debug"
 	"sync"
 )
 
 // PanicError is a recovered execution panic shared with all callers of its
 // flight. Callers should treat it as an internal failure, never bad input.
-type PanicError struct{ Value any }
+//
+// Stack is the panicking goroutine's stack, captured at recovery. Recovering
+// here is what stops net/http from printing it, so without this copy the log
+// line would name the panic value and nothing about where it came from.
+type PanicError struct {
+	Value any
+	Stack []byte
+}
 
 func (e PanicError) Error() string { return fmt.Sprintf("singleflight: work panicked: %v", e.Value) }
 
@@ -57,7 +65,7 @@ func (g *Group) Do(key string, fn func() (any, error)) (v any, err error, shared
 	defer func() {
 		if p := recover(); p != nil {
 			c.val = nil
-			c.err = PanicError{Value: p}
+			c.err = PanicError{Value: p, Stack: debug.Stack()}
 			v, err = nil, c.err
 		}
 		g.mu.Lock()

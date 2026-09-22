@@ -409,11 +409,42 @@ func (p *Processor) determineOutputFormat(
 			po.RotateFreeEnabled())
 
 	format := po.Format()
-
-	switch {
-	case format == imagetype.SVG:
+	if format == imagetype.SVG {
 		// At this point we can't allow requested format to be SVG as we can't save SVGs
 		return imagetype.Unknown, newSaveFormatError(format)
+	}
+	format = p.resolveOutputFormat(po, imgdata.Format(), animated, expectTransparency)
+
+	po.SetFormat(format)
+
+	if !vips.SupportsSave(format) {
+		return format, newSaveFormatError(format)
+	}
+
+	return format, nil
+}
+
+// SkipsProcessing reports whether ProcessImage would hand a source of type
+// source back untouched under o (ISTORE_SKIP_PROCESSING_FORMATS). Such a source
+// is never measured against the frame cap or the pixel budget, so a caller that
+// checks those early has to stand aside for it too.
+func (p *Processor) SkipsProcessing(o *options.Options, source imagetype.Type) bool {
+	return p.shouldSkipStandardProcessing(source, p.NewProcessingOptions(o))
+}
+
+// resolveOutputFormat is the choice determineOutputFormat makes, with the
+// decoded image reduced to the two facts it consults: whether the result is
+// animated, and whether it may need alpha. Kept separate so ProducesAnimation
+// can ask the same question before anything is decoded — two copies of this
+// switch would drift.
+func (p *Processor) resolveOutputFormat(
+	po ProcessingOptions,
+	source imagetype.Type,
+	animated, expectTransparency bool,
+) imagetype.Type {
+	format := po.Format()
+
+	switch {
 	case format == imagetype.Unknown:
 		switch {
 		case po.PreferJxl() && !animated:
@@ -422,8 +453,8 @@ func (p *Processor) determineOutputFormat(
 			format = imagetype.AVIF
 		case po.PreferWebP():
 			format = imagetype.WEBP
-		case p.isImageTypePreferred(imgdata.Format()):
-			format = imgdata.Format()
+		case p.isImageTypePreferred(source):
+			format = source
 		default:
 			format = p.findPreferredFormat(animated, expectTransparency)
 		}
@@ -435,13 +466,33 @@ func (p *Processor) determineOutputFormat(
 		format = imagetype.WEBP
 	}
 
-	po.SetFormat(format)
+	return format
+}
 
-	if !vips.SupportsSave(format) {
-		return format, newSaveFormatError(format)
+// ProducesAnimation reports whether ProcessImage, given an animated source of
+// type source, would write an animated result — and so would hold the source to
+// the frame cap and to the pixel budget for every frame.
+//
+// It answers from options alone, for a caller that has only the source's
+// header. Transparency is the one decoded fact the choice can turn on (through
+// the preferred-format fallback), so both possibilities are tried and the
+// answer is yes only when they agree. A caller using this to refuse early can
+// therefore only ever refuse what ProcessImage itself would refuse.
+func (p *Processor) ProducesAnimation(o *options.Options, source imagetype.Type) bool {
+	po := p.NewProcessingOptions(o)
+	if po.MaxAnimationFrames() <= 1 {
+		return false
 	}
-
-	return format, nil
+	if po.Format() == imagetype.SVG || p.shouldSkipStandardProcessing(source, po) {
+		return false
+	}
+	for _, alpha := range [...]bool{false, true} {
+		f := p.resolveOutputFormat(po, source, true, alpha)
+		if !f.SupportsAnimationSave() || !vips.SupportsSave(f) {
+			return false
+		}
+	}
+	return true
 }
 
 // isImageTypePreferred checks if the given image type is in the list of preferred formats.
