@@ -43,8 +43,17 @@ func writeGIF(t *testing.T, dir, name string, n, w, h int) {
 // newFullServer is a server with the real processor, so GET and HEAD can be
 // compared on the same request.
 func newFullServer(t *testing.T, root string, edit func(*processing.Config)) *Server {
+	return newFullServerWith(t, root, nil, edit)
+}
+
+// newFullServerWith also lets a test change the security limits. HEAD and GET
+// share the one checker, as they do in cmd/istore.
+func newFullServerWith(t *testing.T, root string, editSec func(*security.Config), edit func(*processing.Config)) *Server {
 	t.Helper()
 	sc := security.NewDefaultConfig()
+	if editSec != nil {
+		editSec(&sc)
+	}
 	checker, err := security.New(&sc)
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +62,7 @@ func newFullServer(t *testing.T, root string, edit func(*processing.Config)) *Se
 	if edit != nil {
 		edit(&pc)
 	}
-	s, err := New(Config{Root: root, MaxSourceBytes: 100 << 20, Verifier: nil, HeaderChecker: checker},
+	s, err := New(Config{Root: root, MaxSourceBytes: 100 << 20, HeaderChecker: checker},
 		func(p auximageprovider.Provider) (*processing.Processor, error) {
 			return processing.New(&pc, checker, p)
 		})
@@ -111,20 +120,50 @@ func TestProcessedHeadAgreesWithGetOnImplicitFormats(t *testing.T) {
 	}
 }
 
-// A format the operator passes through untouched is never measured by GET, so
-// HEAD must not measure it either — otherwise HEAD refuses what GET serves.
-func TestProcessedHeadStandsAsideForSkippedFormats(t *testing.T) {
+// A format the operator passes through untouched is measured by GET only as
+// the one frame it loaded to decide that: no frame cap, and a pixel budget of
+// width × height. HEAD has to apply exactly that — refusing on the frame count
+// would refuse what GET serves, and skipping the pixel check altogether would
+// pass what GET refuses.
+func TestProcessedHeadMeasuresSkippedFormatsAsOneFrame(t *testing.T) {
 	dir := t.TempDir()
-	writeGIF(t, dir, "many.gif", 350, 4, 4)
-	s := newFullServer(t, dir, func(c *processing.Config) {
+	writeGIF(t, dir, "many.gif", 350, 4, 4)      // over the frame cap, tiny frames
+	writeGIF(t, dir, "big.gif", 1, 2000, 2000)   // one 4 MP frame
+	writeGIF(t, dir, "wide.gif", 70, 2000, 2000) // 4 MP per frame, 280 MP in all
+	s := newFullServerWith(t, dir, func(c *security.Config) {
+		c.MaxSrcResolution = 5_000_000
+	}, func(c *processing.Config) {
+		c.SkipProcessingFormats = []imagetype.Type{imagetype.GIF}
+	})
+	for _, tc := range []struct {
+		path, chain string
+		want        int
+	}{
+		{"/many.gif", "image/resize,w_3", http.StatusOK},
+		{"/many.gif", "image/format,gif", http.StatusOK},
+		{"/wide.gif", "image/format,gif", http.StatusOK}, // 4 MP frame fits; the 280 MP total is not counted
+		{"/big.gif", "image/format,gif", http.StatusOK},
+	} {
+		url := tc.path + "?x-oss-process=" + tc.chain
+		head := status(s, http.MethodHead, url, "")
+		get := status(s, http.MethodGet, url, "")
+		if head != tc.want || get != tc.want {
+			t.Errorf("skipped GIF %s %s: HEAD %d, GET %d, want both %d", tc.path, tc.chain, head, get, tc.want)
+		}
+	}
+
+	// Now a budget the single frame itself exceeds.
+	s = newFullServerWith(t, dir, func(c *security.Config) {
+		c.MaxSrcResolution = 1_000_000
+	}, func(c *processing.Config) {
 		c.SkipProcessingFormats = []imagetype.Type{imagetype.GIF}
 	})
 	for _, chain := range []string{"image/resize,w_3", "image/format,gif"} {
-		url := "/many.gif?x-oss-process=" + chain
+		url := "/big.gif?x-oss-process=" + chain
 		head := status(s, http.MethodHead, url, "")
 		get := status(s, http.MethodGet, url, "")
-		if head != http.StatusOK || get != http.StatusOK {
-			t.Errorf("skipped GIF, %s: HEAD %d, GET %d, want both 200", chain, head, get)
+		if head != http.StatusUnprocessableEntity || get != http.StatusUnprocessableEntity {
+			t.Errorf("skipped 4 MP GIF over a 1 MP budget, %s: HEAD %d, GET %d, want both 422", chain, head, get)
 		}
 	}
 }

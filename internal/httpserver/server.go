@@ -851,13 +851,14 @@ func (s *Server) preflightProcessedHead(w http.ResponseWriter, r *http.Request, 
 	if chain.IsAutoFormat() {
 		setAutoFormat(o, info.Format, negotiated)
 	}
-	// A format the operator has GET pass through untouched is never measured,
-	// so refusing it here would be refusing something GET serves.
-	if s.proc != nil && s.proc.SkipsProcessing(o, info.Format) {
-		return true
-	}
+	// A format the operator has GET pass through untouched is still measured,
+	// but only as the single frame GET loaded to decide that: no frame cap, and
+	// a pixel budget of width × height. So skipping turns off the animation
+	// accounting below and nothing else — returning early here would let HEAD
+	// wave through a source whose first frame alone is over budget.
+	skipped := s.proc != nil && s.proc.SkipsProcessing(o, info.Format)
 	frames := 1
-	if info.FrameCount > 1 && s.cfg.HeaderChecker.MaxAnimationFrames(o) > 1 &&
+	if !skipped && info.FrameCount > 1 && s.cfg.HeaderChecker.MaxAnimationFrames(o) > 1 &&
 		decodesAnimation(info.Format) && s.producesAnimation(o, info.Format) {
 		if err := s.cfg.HeaderChecker.CheckAnimationFrames(o, info.FrameCount); err != nil {
 			s.failProcess(w, r, err)
