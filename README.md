@@ -728,7 +728,7 @@ which platform they cover — but if it does not build or does not behave on
 macOS or a BSD, that is not a bug against iStore. The macOS notes further
 down are for working on the code, not for running it.
 
-- Go 1.24+
+- Go 1.25+
 - libvips 8.13+ with, at minimum: libjpeg, libpng, libwebp (8.16+ only if you
   need to *read* animated JPEG XL — see "Not built yet")
 - TIFF loads on any of those. On libvips 8.17 built against libtiff 4.7+ the
