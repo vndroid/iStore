@@ -38,7 +38,7 @@ func loadStyles(path string) (map[string]string, error) {
 	}
 	for name, raw := range styles {
 		if !styleName.MatchString(name) {
-			return nil, fmt.Errorf("style %q: name must be 1–63 ASCII letters, digits, _, - or .", name)
+			return nil, fmt.Errorf("style %q: name must be 1–63 of ASCII letters, digits, '.', '_' and '-'", name)
 		}
 		if strings.HasPrefix(raw, "style/") {
 			return nil, fmt.Errorf("style %q: recursive styles are not allowed", name)

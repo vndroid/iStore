@@ -728,7 +728,7 @@ which platform they cover — but if it does not build or does not behave on
 macOS or a BSD, that is not a bug against iStore. The macOS notes further
 down are for working on the code, not for running it.
 
-- Go 1.24+
+- Go 1.25+
 - libvips 8.13+ with, at minimum: libjpeg, libpng, libwebp (8.16+ only if you
   need to *read* animated JPEG XL — see "Not built yet")
 - TIFF loads on any of those. On libvips 8.17 built against libtiff 4.7+ the
@@ -741,14 +741,19 @@ down are for working on the code, not for running it.
 - for AVIF output: libheif built with an AV1 **encoder** (aom, SVT-AV1 or rav1e)
 - for JPEG XL output: libjxl
 
-Alpine 3.23 (`vips` 8.17.3, `go` 1.25.10, `libheif` 1.23.0):
+Alpine 3.23 (`vips` 8.17.3, `libheif` 1.23.0):
 
 ```sh
 apk add --no-cache \
-  build-base pkgconf go \
+  build-base pkgconf \
   vips-dev vips-heif vips-jxl \
   font-wqy-zenhei font-noto-cjk
 ```
+
+Alpine's own `go` package is 1.25.10, which lacks the standard-library security
+fixes in later 1.25 patch releases. CI and the image below build with the
+official `golang:1.25-alpine3.23` image instead, whose tag floats to the newest
+1.25.x; outside Docker, install Go from go.dev rather than from apk.
 
 Runtime only, without the toolchain:
 
@@ -788,8 +793,8 @@ can be dropped if the text will never be Chinese.
 A multi-stage image:
 
 ```dockerfile
-FROM alpine:3.23 AS build
-RUN apk add --no-cache build-base pkgconf go vips-dev vips-heif vips-jxl
+FROM golang:1.25-alpine3.23 AS build
+RUN apk add --no-cache build-base pkgconf vips-dev vips-heif vips-jxl
 WORKDIR /src
 COPY . .
 RUN CGO_ENABLED=1 go build -o /out/istore ./cmd/istore
@@ -1150,8 +1155,12 @@ rests on answers correctly, and that the encoder probe agrees with a real encode
 at a size no encoder treats specially. The pixel-level checks above are still not
 in there: they need real images, and they were run by hand.
 
-CI (`.github/workflows/ci.yml`) builds and runs those tests on Alpine 3.23 with
-`vips-heif` and `vips-jxl` installed, plus a `gofmt` and `go mod tidy` check. A
+CI (`.github/workflows/ci.yml`) builds and runs those tests on Alpine 3.23
+(`golang:1.25-alpine3.23`) with `vips-heif` and `vips-jxl` installed, runs
+`staticcheck` against the same libvips headers, and adds a `gofmt` and
+`go mod tidy` check.
+`.github/workflows/govulncheck.yml` checks for reachable known vulnerabilities
+on every change and weekly, since a new advisory arrives without a push. A
 cgo project needs the build itself to be the test — "it compiles here" is a
 claim about one libvips, not about Go.
 

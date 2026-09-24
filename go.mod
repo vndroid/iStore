@@ -1,5 +1,5 @@
 module github.com/vndroid/istore
 
-go 1.24
+go 1.25
 
 require github.com/trimmer-io/go-xmp v1.0.0
