@@ -37,6 +37,9 @@ jobs:
             sh -eu -c '
               apk add --no-cache build-base pkgconf go vips-dev
               go version
-              GOBIN=/tmp/bin go install golang.org/x/vuln/cmd/govulncheck@latest
+              # govulncheck itself needs a newer Go than Alpine ships, so the
+              # install may fetch one. The scan below runs on the Go from apk,
+              # so the standard library it checks is the one releases use.
+              GOTOOLCHAIN=auto GOBIN=/tmp/bin go install golang.org/x/vuln/cmd/govulncheck@latest
               /tmp/bin/govulncheck ./...
             '
