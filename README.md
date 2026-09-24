@@ -1151,7 +1151,10 @@ at a size no encoder treats specially. The pixel-level checks above are still no
 in there: they need real images, and they were run by hand.
 
 CI (`.github/workflows/ci.yml`) builds and runs those tests on Alpine 3.23 with
-`vips-heif` and `vips-jxl` installed, plus a `gofmt` and `go mod tidy` check. A
+`vips-heif` and `vips-jxl` installed, runs `staticcheck` against the same
+libvips headers, and adds a `gofmt` and `go mod tidy` check.
+`.github/workflows/govulncheck.yml` checks for reachable known vulnerabilities
+on every change and weekly, since a new advisory arrives without a push. A
 cgo project needs the build itself to be the test — "it compiles here" is a
 claim about one libvips, not about Go.
 

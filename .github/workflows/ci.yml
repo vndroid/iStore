@@ -38,7 +38,7 @@ jobs:
           key: alpine323-go-${{ hashFiles('go.sum') }}
           restore-keys: alpine323-go-
 
-      - name: Build, vet and test
+      - name: Build, vet, staticcheck and test
         run: |
           mkdir -p .ci-cache/go-mod .ci-cache/go-build
           docker run --rm \
@@ -54,6 +54,8 @@ jobs:
               pkg-config --modversion vips
               go build ./...
               go vet ./...
+              GOBIN=/tmp/bin go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
+              /tmp/bin/staticcheck ./...
               go test ./internal/...
             '
 
@@ -61,6 +63,9 @@ jobs:
         if: always()
         run: sudo chown -R "$(id -u):$(id -g)" .ci-cache
 
+  # staticcheck runs in the step above rather than here: it type-checks the cgo
+  # packages, which needs the libvips headers just as the compiler does.
+  #
   # gofmt and the module graph need no libvips, so they run on the runner and
   # fail in seconds rather than after an apk install.
   tidy:

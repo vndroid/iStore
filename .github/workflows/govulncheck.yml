@@ -1,0 +1,42 @@
+# Known vulnerabilities in the Go standard library and in the module graph,
+# filtered to the ones iStore's code can actually reach. It runs on a schedule
+# as well as on changes, because a new advisory against code that has not
+# changed is exactly the case a push-triggered check never sees.
+#
+# It runs on Alpine for the same reason the build does: govulncheck type-checks
+# every package, the cgo ones included, so it needs the libvips headers, and the
+# standard library it checks is the Go that Alpine ships, which is the one the
+# release is built with.
+name: govulncheck
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    name: govulncheck (Alpine 3.23)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: govulncheck
+        run: |
+          docker run --rm \
+            -v "$PWD:/src" -w /src \
+            -e CGO_ENABLED=1 \
+            alpine:3.23 \
+            sh -eu -c '
+              apk add --no-cache build-base pkgconf go vips-dev
+              go version
+              GOBIN=/tmp/bin go install golang.org/x/vuln/cmd/govulncheck@latest
+              /tmp/bin/govulncheck ./...
+            '
