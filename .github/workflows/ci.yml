@@ -8,6 +8,11 @@
 # job's own `container:`, deliberately. A job container on Alpine has to run the
 # checkout action's glibc Node under musl, which is a problem worth not having:
 # this way the checkout happens on the runner and only the build sees Alpine.
+#
+# Go comes from the official golang:1.25-alpine3.23 image rather than from apk.
+# The tag names no patch release, so every run gets the newest 1.25.x and its
+# security fixes; apk only moves Go when Alpine rebuilds the package. libvips
+# and the C toolchain still come from Alpine 3.23.
 name: CI
 
 on:
@@ -35,8 +40,8 @@ jobs:
           path: |
             .ci-cache/go-mod
             .ci-cache/go-build
-          key: alpine323-go-${{ hashFiles('go.sum') }}
-          restore-keys: alpine323-go-
+          key: golang125-alpine323-${{ hashFiles('go.sum') }}
+          restore-keys: golang125-alpine323-
 
       - name: Build, vet, staticcheck and test
         run: |
@@ -48,14 +53,15 @@ jobs:
             -e GOMODCACHE=/gomod \
             -e GOCACHE=/gocache \
             -e CGO_ENABLED=1 \
-            alpine:3.23 \
+            golang:1.25-alpine3.23 \
             sh -eu -c '
-              apk add --no-cache build-base pkgconf go vips-dev vips-heif vips-jxl
+              apk add --no-cache build-base pkgconf vips-dev vips-heif vips-jxl
+              go version
               pkg-config --modversion vips
               go build ./...
               go vet ./...
-              # staticcheck itself needs a newer Go than Alpine ships, so the
-              # install may fetch one; the check below still runs on the Go from apk.
+              # staticcheck itself needs a newer Go than 1.25, so the install
+              # may fetch one; the check below still runs on the image Go.
               GOTOOLCHAIN=auto GOBIN=/tmp/bin go install honnef.co/go/tools/cmd/staticcheck@v0.8.1
               /tmp/bin/staticcheck ./...
               go test ./internal/...
