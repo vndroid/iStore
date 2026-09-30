@@ -1,0 +1,19 @@
+# Go modules and the actions the workflows use. The alpine:3.23 image and the
+# apk packages are named inside `docker run` scripts, which Dependabot cannot
+# see; moving Alpine forward is a deliberate change to the documented target
+# platform, not a routine bump.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
