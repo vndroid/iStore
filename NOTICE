@@ -1,0 +1,114 @@
+iXoSS
+Copyright (c) 2026 Kane
+
+iXoSS is free software: you can redistribute it and/or modify it under the
+terms of the GNU Affero General Public License, version 3, as published by the
+Free Software Foundation. A copy is in LICENSE.
+
+Section 13 is the one worth reading before you deploy this: iXoSS is a network
+service, and if you modify it and let anyone else use it over a network, you
+have to offer them the modified source.
+
+================================================================================
+Why AGPL-3.0 over Apache-2.0 code
+================================================================================
+
+The image engine is imgproxy's, under Apache-2.0 (LICENSE-imgproxy). Apache-2.0
+is one-way compatible with the GPL family at version 3: a work built from
+Apache-2.0 sources may be distributed under AGPL-3.0, and this one is. That
+compatibility runs one way only. The files listed below stay under Apache-2.0
+terms as iXoSS received them, their notices are retained here, and nothing in
+this repository relicenses imgproxy itself.
+
+libvips, which iXoSS links against dynamically, is LGPL-2.1 *or later*. That
+"or later" is what makes the combination lawful: it lets libvips be taken under
+LGPL-3.0, which is compatible with AGPL-3.0. A libvips build pinned to
+LGPL-2.1-only would not be.
+
+================================================================================
+Portions of this software are derived from imgproxy
+================================================================================
+
+The following directories contain source code copied from, or derived from,
+the imgproxy project:
+
+    internal/processing/
+    internal/options/
+    internal/security/
+    internal/vips/          (Go and C sources)
+    internal/imagetype/
+    internal/imagemeta/
+    internal/auximageprovider/
+    internal/env/
+    internal/bufreader/
+    internal/errctx/
+    internal/ioutil/
+    internal/imath/
+    internal/ensure/
+
+    imgproxy
+    https://github.com/imgproxy/imgproxy
+    Copyright (c) imgproxy contributors
+    Licensed under the Apache License, Version 2.0
+
+A copy of the Apache License, Version 2.0 is provided in LICENSE-imgproxy.
+
+Modifications made by iXoSS are described in README.md under
+"What was changed relative to imgproxy". In summary:
+
+  * internal/vips no longer depends on imgproxy's `imagedata` and `options`
+    packages; it uses iXoSS's own internal/imagedata and takes save options
+    from process configuration.
+  * internal/env dropped aws.go, gcp.go and load.go, which resolve values via
+    AWS Secrets Manager, AWS SSM and GCP Secret Manager.
+  * imgproxy's `server` package was replaced by internal/timeout, which carries
+    the single function (CheckTimeout) that the pipeline used.
+  * imgproxy's `options/parser` package was removed; iXoSS parses the
+    x-oss-process grammar instead.
+  * SVG support was removed: internal/imagetype/svg.go (detection) and
+    imgproxy's processing/svg (sanitizing), both of which need `xmlparser`.
+  * auximageprovider loads auxiliary images from disk only, not over HTTP.
+  * Environment variable prefix changed from IMGPROXY_ to IXOSS_.
+  * Tests and test helpers were not carried over.
+  * internal/vips gained six operations that imgproxy does not have:
+    vips_linear_go (a linear transform of the colour bands),
+    vips_round_corners_go (a rounded-rectangle alpha mask), vips_rotate_go
+    (arbitrary-angle rotation on a transparent background), vips_text_go
+    (Pango text as a coloured RGBA image) and vips_ensure_alpha_go, together
+    with the Image.Linear, Image.RoundCorners, Image.RotateAny,
+    Image.EnsureAlpha, Image.AverageHue methods and the vips.NewText
+    constructor. vips.Image.Save also gained a SaveOverrides parameter, for the
+    one save setting OSS exposes per request.
+  * internal/processing gained three pipeline steps that imgproxy does not
+    have: adjust.go (brightness and contrast), round_corners.go (circle and
+    rounded corners) and rotate_free.go (arbitrary-angle rotation), with the
+    corresponding options keys and accessors.
+  * internal/imageinfo and its EXIF reader are entirely iXoSS's: imgproxy has
+    no info endpoint, and neither the info nor the average-hue query exists
+    upstream.
+
+================================================================================
+Third-party libraries linked at build time
+================================================================================
+
+libvips
+  Copyright (C) 1991-2024 the libvips contributors
+  Licensed under the GNU Lesser General Public License, version 2.1 or later
+  https://github.com/libvips/libvips
+
+  iXoSS links against libvips dynamically via cgo. libvips in turn loads
+  libheif, libaom/libdav1d, libjxl, libwebp, libjpeg-turbo, libpng and others,
+  each under its own license. See your libvips build for the exact set.
+
+================================================================================
+Go dependencies
+================================================================================
+
+github.com/trimmer-io/go-xmp
+  Copyright (c) 2017-2018 Alexander Eichhorn
+  Licensed under the Apache License, Version 2.0
+  https://github.com/trimmer-io/go-xmp
+
+  The only module in go.mod. It is compiled into the binary, so it is
+  distributed with it; Apache-2.0 is compatible with AGPL-3.0 the same way
+  imgproxy's code is.
