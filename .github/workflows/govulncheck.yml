@@ -39,9 +39,9 @@ jobs:
               apk add --no-cache build-base pkgconf vips-dev
               go version
               # govulncheck@latest floats, so a release may one day need a newer
-              # Go than the image's; auto lets the install fetch it. The scan
-              # below still runs on the image Go, so the standard library it
-              # checks is the one releases use.
+              # Go than the one in the image; auto lets the install fetch it.
+              # The scan below still runs on the image Go, so the standard
+              # library it checks is the one releases use.
               GOTOOLCHAIN=auto GOBIN=/tmp/bin go install golang.org/x/vuln/cmd/govulncheck@latest
               /tmp/bin/govulncheck ./...
             '
