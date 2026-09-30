@@ -170,8 +170,8 @@ func (u *Upstream) Stat(ctx context.Context, urlPath string) (*Info, error) {
 // headUnsupported reports the two statuses that mean "this origin does not do
 // HEAD" rather than "this object is not available".
 func headUnsupported(err error) bool {
-	var ue *UpstreamError
-	if !errors.As(err, &ue) {
+	ue, ok := errors.AsType[*UpstreamError](err)
+	if !ok {
 		return false
 	}
 	return ue.Status == http.StatusMethodNotAllowed || ue.Status == http.StatusNotImplemented
@@ -200,8 +200,7 @@ func (u *Upstream) OpenHeader(ctx context.Context, urlPath string, n int) (*Obje
 		// a zero-length object. Ask again without one so the caller gets the
 		// real answer — an empty body, and then "not an image" — rather than a
 		// range error.
-		var ue *UpstreamError
-		if errors.As(err, &ue) && ue.Status == http.StatusRequestedRangeNotSatisfiable {
+		if ue, ok := errors.AsType[*UpstreamError](err); ok && ue.Status == http.StatusRequestedRangeNotSatisfiable {
 			return u.Open(ctx, urlPath)
 		}
 		return nil, err
@@ -335,8 +334,7 @@ func transportError(t *url.URL, err error) error {
 // the object, and that is the origin's fault rather than an internal error.
 func bodyError(url string, err error) error {
 	// A second Read after a failed one returns the already-classified error.
-	var ue *UpstreamError
-	if errors.As(err, &ue) {
+	if _, ok := errors.AsType[*UpstreamError](err); ok {
 		return err
 	}
 	return &UpstreamError{URL: url, status: gatewayStatus(err), Err: err}

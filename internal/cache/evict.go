@@ -4,7 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"time"
 )
 
@@ -109,7 +109,7 @@ func (d *Disk) Evict(cfg EvictConfig) (removed int, freed int64, err error) {
 
 	// Size bound: oldest-used first.
 	if cfg.MaxBytes > 0 && total > cfg.MaxBytes {
-		sort.Slice(entries, func(i, j int) bool { return entries[i].used.Before(entries[j].used) })
+		slices.SortFunc(entries, func(a, b entry) int { return a.used.Compare(b.used) })
 		for _, e := range entries {
 			if total <= cfg.MaxBytes {
 				break

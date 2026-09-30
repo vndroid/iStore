@@ -69,8 +69,7 @@ func TestReadReturnsPartialInfoOnUnsupportedContainer(t *testing.T) {
 
 	info, err := Read(bytes.NewReader(b), int64(len(b)))
 
-	var unsupported ErrUnsupportedContainer
-	if !errors.As(err, &unsupported) {
+	if _, ok := errors.AsType[ErrUnsupportedContainer](err); !ok {
 		t.Skipf("this build does not detect the stub as a container: %v", err)
 	}
 	if info == nil {

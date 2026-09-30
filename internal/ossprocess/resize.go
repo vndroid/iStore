@@ -202,8 +202,8 @@ func (r *Resize) Resolve(srcW, srcH int) Target {
 	// p_ is a straight percentage of the source and ignores mode entirely.
 	if r.Percent > 0 {
 		t := Target{
-			W:    maxInt(1, srcW*r.Percent/100),
-			H:    maxInt(1, srcH*r.Percent/100),
+			W:    max(1, srcW*r.Percent/100),
+			H:    max(1, srcH*r.Percent/100),
 			Type: processing.ResizeForce,
 		}
 		if r.Limit && r.Percent > 100 {
@@ -229,9 +229,9 @@ func (r *Resize) Resolve(srcW, srcH int) Target {
 	// force path below carry it.
 	if w == 0 || h == 0 {
 		if w == 0 {
-			w = maxInt(1, srcW*h/srcH)
+			w = max(1, srcW*h/srcH)
 		} else {
-			h = maxInt(1, srcH*w/srcW)
+			h = max(1, srcH*w/srcW)
 		}
 		t := Target{W: w, H: h, Type: processing.ResizeForce}
 		t.Noop = r.Limit && (w > srcW || h > srcH)
@@ -253,9 +253,9 @@ func (r *Resize) Resolve(srcW, srcH int) Target {
 		// this way but then crops to w x h, so instead compute the covering size
 		// here and force it. The aspect ratio is preserved because both sides
 		// come from one scale factor.
-		scale := maxFloat(float64(w)/float64(srcW), float64(h)/float64(srcH))
-		t.W = maxInt(1, int(float64(srcW)*scale+0.5))
-		t.H = maxInt(1, int(float64(srcH)*scale+0.5))
+		scale := max(float64(w)/float64(srcW), float64(h)/float64(srcH))
+		t.W = max(1, int(float64(srcW)*scale+0.5))
+		t.H = max(1, int(float64(srcH)*scale+0.5))
 		t.Type = processing.ResizeForce
 	default: // ModeLfit
 		t.Type = processing.ResizeFit
@@ -301,18 +301,4 @@ func (t Target) apply(o *options.Options) {
 		o.Set(keys.ExtendEnabled, true)
 		o.Set(keys.Background, t.Color)
 	}
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func maxFloat(a, b float64) float64 {
-	if a > b {
-		return a
-	}
-	return b
 }
