@@ -1,7 +1,7 @@
 package imagetype
 
 import (
-	"github.com/vndroid/ixoss/internal/bufreader"
+	"github.com/vndroid/iXoSS/internal/bufreader"
 )
 
 var (

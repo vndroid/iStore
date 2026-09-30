@@ -1,4 +1,4 @@
-module github.com/vndroid/ixoss
+module github.com/vndroid/iXoSS
 
 go 1.26
 

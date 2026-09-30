@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/vndroid/ixoss/internal/vips"
+	"github.com/vndroid/iXoSS/internal/vips"
 )
 
 // ServeHTTP calls Chain.CheckEncoders, which asks libvips what it can write, so

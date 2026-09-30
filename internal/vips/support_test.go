@@ -6,8 +6,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/vndroid/ixoss/internal/imagedata"
-	"github.com/vndroid/ixoss/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/imagedata"
+	"github.com/vndroid/iXoSS/internal/imagetype"
 )
 
 // These tests need a live libvips, which is the point of them: everything here

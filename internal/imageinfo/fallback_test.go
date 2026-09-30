@@ -6,7 +6,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/vndroid/ixoss/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/imagetype"
 )
 
 // jpegWithFatSegments returns a JPEG with n padding segments spliced in after

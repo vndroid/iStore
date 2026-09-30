@@ -3,9 +3,9 @@ package processing
 import (
 	"context"
 
-	"github.com/vndroid/ixoss/internal/imagedata"
-	"github.com/vndroid/ixoss/internal/timeout"
-	"github.com/vndroid/ixoss/internal/vips"
+	"github.com/vndroid/iXoSS/internal/imagedata"
+	"github.com/vndroid/iXoSS/internal/timeout"
+	"github.com/vndroid/iXoSS/internal/vips"
 )
 
 type Context struct {

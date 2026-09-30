@@ -9,7 +9,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/vndroid/ixoss/internal/ossprocess"
+	"github.com/vndroid/iXoSS/internal/ossprocess"
 )
 
 // OSS allows 1–63 characters from this set for user-defined style names.

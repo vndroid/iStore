@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"regexp"
 
-	"github.com/vndroid/ixoss/internal/errctx"
+	"github.com/vndroid/iXoSS/internal/errctx"
 )
 
 // badImageErrRe recognises a libvips error as the source's fault: 422, not 500.

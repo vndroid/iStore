@@ -20,9 +20,9 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/vndroid/ixoss/internal/imagedata"
-	"github.com/vndroid/ixoss/internal/imagetype"
-	"github.com/vndroid/ixoss/internal/vips/color"
+	"github.com/vndroid/iXoSS/internal/imagedata"
+	"github.com/vndroid/iXoSS/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/vips/color"
 )
 
 type Image struct {

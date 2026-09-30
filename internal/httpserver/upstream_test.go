@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/vndroid/ixoss/internal/auximageprovider"
-	"github.com/vndroid/ixoss/internal/processing"
-	"github.com/vndroid/ixoss/internal/source"
+	"github.com/vndroid/iXoSS/internal/auximageprovider"
+	"github.com/vndroid/iXoSS/internal/processing"
+	"github.com/vndroid/iXoSS/internal/source"
 )
 
 // newUpstreamServer wires a Server onto an origin, with the two upstream bounds

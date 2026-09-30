@@ -11,12 +11,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vndroid/ixoss/internal/imagedata"
-	"github.com/vndroid/ixoss/internal/imagetype"
-	"github.com/vndroid/ixoss/internal/options"
-	"github.com/vndroid/ixoss/internal/options/keys"
-	"github.com/vndroid/ixoss/internal/security"
-	"github.com/vndroid/ixoss/internal/vips"
+	"github.com/vndroid/iXoSS/internal/imagedata"
+	"github.com/vndroid/iXoSS/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/options"
+	"github.com/vndroid/iXoSS/internal/options/keys"
+	"github.com/vndroid/iXoSS/internal/security"
+	"github.com/vndroid/iXoSS/internal/vips"
 )
 
 // The pipeline cannot be tested without libvips, so this package's tests bring

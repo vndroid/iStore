@@ -3,7 +3,7 @@ package ossprocess
 import (
 	"testing"
 
-	"github.com/vndroid/ixoss/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/imagetype"
 )
 
 func TestFixedOutputFormat(t *testing.T) {

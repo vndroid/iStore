@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/vndroid/ixoss/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/imagetype"
 )
 
 // HeaderBytes is how much of the file is read to answer an info query.

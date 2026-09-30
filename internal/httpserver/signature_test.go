@@ -7,9 +7,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/vndroid/ixoss/internal/auximageprovider"
-	"github.com/vndroid/ixoss/internal/processing"
-	"github.com/vndroid/ixoss/internal/security"
+	"github.com/vndroid/iXoSS/internal/auximageprovider"
+	"github.com/vndroid/iXoSS/internal/processing"
+	"github.com/vndroid/iXoSS/internal/security"
 )
 
 func TestSignedMessage(t *testing.T) {

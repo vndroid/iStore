@@ -1,8 +1,8 @@
 package auximageprovider
 
 import (
-	"github.com/vndroid/ixoss/internal/ensure"
-	"github.com/vndroid/ixoss/internal/env"
+	"github.com/vndroid/iXoSS/internal/ensure"
+	"github.com/vndroid/iXoSS/internal/env"
 )
 
 var (

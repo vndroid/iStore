@@ -3,12 +3,12 @@ package processing
 import (
 	"slices"
 
-	"github.com/vndroid/ixoss/internal/imagetype"
-	"github.com/vndroid/ixoss/internal/options"
-	"github.com/vndroid/ixoss/internal/options/keys"
-	"github.com/vndroid/ixoss/internal/security"
-	"github.com/vndroid/ixoss/internal/vips"
-	"github.com/vndroid/ixoss/internal/vips/color"
+	"github.com/vndroid/iXoSS/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/options"
+	"github.com/vndroid/iXoSS/internal/options/keys"
+	"github.com/vndroid/iXoSS/internal/security"
+	"github.com/vndroid/iXoSS/internal/vips"
+	"github.com/vndroid/iXoSS/internal/vips/color"
 )
 
 // ProcessingOptions is a thin wrapper around options.Options that provides

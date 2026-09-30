@@ -10,7 +10,7 @@ import (
 	"image/png"
 	"testing"
 
-	"github.com/vndroid/ixoss/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/imagetype"
 )
 
 // Test images are generated rather than committed, so the expected dimensions

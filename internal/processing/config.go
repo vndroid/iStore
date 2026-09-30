@@ -4,10 +4,10 @@ import (
 	"errors"
 	"maps"
 
-	"github.com/vndroid/ixoss/internal/ensure"
-	"github.com/vndroid/ixoss/internal/env"
-	"github.com/vndroid/ixoss/internal/imagetype"
-	"github.com/vndroid/ixoss/internal/vips"
+	"github.com/vndroid/iXoSS/internal/ensure"
+	"github.com/vndroid/iXoSS/internal/env"
+	"github.com/vndroid/iXoSS/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/vips"
 )
 
 var (

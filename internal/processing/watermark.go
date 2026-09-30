@@ -4,11 +4,11 @@ import (
 	"context"
 	"math"
 
-	"github.com/vndroid/ixoss/internal/imagedata"
-	"github.com/vndroid/ixoss/internal/imath"
-	"github.com/vndroid/ixoss/internal/options"
-	"github.com/vndroid/ixoss/internal/options/keys"
-	"github.com/vndroid/ixoss/internal/vips"
+	"github.com/vndroid/iXoSS/internal/imagedata"
+	"github.com/vndroid/iXoSS/internal/imath"
+	"github.com/vndroid/iXoSS/internal/options"
+	"github.com/vndroid/iXoSS/internal/options/keys"
+	"github.com/vndroid/iXoSS/internal/vips"
 )
 
 // watermarkPipeline constructs the watermark processing pipeline.

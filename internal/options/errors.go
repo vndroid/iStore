@@ -3,7 +3,7 @@ package options
 import (
 	"fmt"
 
-	"github.com/vndroid/ixoss/internal/errctx"
+	"github.com/vndroid/iXoSS/internal/errctx"
 )
 
 type (

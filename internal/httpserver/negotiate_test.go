@@ -3,7 +3,7 @@ package httpserver
 import (
 	"testing"
 
-	"github.com/vndroid/ixoss/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/imagetype"
 )
 
 const chromeAccept = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"

@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/vndroid/ixoss/internal/options"
-	"github.com/vndroid/ixoss/internal/ossprocess"
-	"github.com/vndroid/ixoss/internal/source"
+	"github.com/vndroid/iXoSS/internal/options"
+	"github.com/vndroid/iXoSS/internal/ossprocess"
+	"github.com/vndroid/iXoSS/internal/source"
 )
 
 // newTestProvider returns a provider over a temp root holding one 4x4 PNG named

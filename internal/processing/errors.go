@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/vndroid/ixoss/internal/errctx"
-	"github.com/vndroid/ixoss/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/errctx"
+	"github.com/vndroid/iXoSS/internal/imagetype"
 )
 
 type (

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vndroid/ixoss/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/imagetype"
 )
 
 // URLReplacement represents a URL replacement configuration

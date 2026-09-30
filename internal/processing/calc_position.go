@@ -3,7 +3,7 @@ package processing
 import (
 	"math"
 
-	"github.com/vndroid/ixoss/internal/imath"
+	"github.com/vndroid/iXoSS/internal/imath"
 )
 
 func calcPosition(

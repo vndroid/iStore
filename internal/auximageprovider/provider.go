@@ -7,8 +7,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/vndroid/ixoss/internal/imagedata"
-	"github.com/vndroid/ixoss/internal/options"
+	"github.com/vndroid/iXoSS/internal/imagedata"
+	"github.com/vndroid/iXoSS/internal/options"
 )
 
 // Provider is an interface that provides image data and headers based

@@ -20,14 +20,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/vndroid/ixoss/internal/auximageprovider"
-	"github.com/vndroid/ixoss/internal/cache"
-	"github.com/vndroid/ixoss/internal/httpserver"
-	"github.com/vndroid/ixoss/internal/imagetype"
-	"github.com/vndroid/ixoss/internal/ossprocess"
-	"github.com/vndroid/ixoss/internal/processing"
-	"github.com/vndroid/ixoss/internal/security"
-	"github.com/vndroid/ixoss/internal/vips"
+	"github.com/vndroid/iXoSS/internal/auximageprovider"
+	"github.com/vndroid/iXoSS/internal/cache"
+	"github.com/vndroid/iXoSS/internal/httpserver"
+	"github.com/vndroid/iXoSS/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/ossprocess"
+	"github.com/vndroid/iXoSS/internal/processing"
+	"github.com/vndroid/iXoSS/internal/security"
+	"github.com/vndroid/iXoSS/internal/vips"
 )
 
 func main() {

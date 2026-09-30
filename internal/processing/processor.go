@@ -1,8 +1,8 @@
 package processing
 
 import (
-	"github.com/vndroid/ixoss/internal/auximageprovider"
-	"github.com/vndroid/ixoss/internal/security"
+	"github.com/vndroid/iXoSS/internal/auximageprovider"
+	"github.com/vndroid/iXoSS/internal/security"
 )
 
 // Processor is responsible for processing images according to the given configuration.

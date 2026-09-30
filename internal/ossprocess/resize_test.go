@@ -3,7 +3,7 @@ package ossprocess
 import (
 	"testing"
 
-	"github.com/vndroid/ixoss/internal/processing"
+	"github.com/vndroid/iXoSS/internal/processing"
 )
 
 // resolve is a helper: parse one resize action and resolve it against a source.

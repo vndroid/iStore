@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/vndroid/ixoss/internal/options"
-	"github.com/vndroid/ixoss/internal/options/keys"
-	"github.com/vndroid/ixoss/internal/processing"
+	"github.com/vndroid/iXoSS/internal/options"
+	"github.com/vndroid/iXoSS/internal/options/keys"
+	"github.com/vndroid/iXoSS/internal/processing"
 )
 
 // ossGravities maps OSS's `g_` anchor names onto the pipeline's gravity types.

@@ -9,7 +9,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/vndroid/ixoss/internal/ensure"
+	"github.com/vndroid/iXoSS/internal/ensure"
 )
 
 // Config mirrors imgproxy's vips.Config field for field, so the C-side option

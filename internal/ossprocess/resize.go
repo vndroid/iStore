@@ -5,10 +5,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/vndroid/ixoss/internal/options"
-	"github.com/vndroid/ixoss/internal/options/keys"
-	"github.com/vndroid/ixoss/internal/processing"
-	"github.com/vndroid/ixoss/internal/vips/color"
+	"github.com/vndroid/iXoSS/internal/options"
+	"github.com/vndroid/iXoSS/internal/options/keys"
+	"github.com/vndroid/iXoSS/internal/processing"
+	"github.com/vndroid/iXoSS/internal/vips/color"
 )
 
 // ResizeMode is OSS's `m_` parameter.

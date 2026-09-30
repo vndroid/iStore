@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/vndroid/ixoss/internal/options/keys"
+	"github.com/vndroid/iXoSS/internal/options/keys"
 )
 
 func TestCircleAndRoundedCorners(t *testing.T) {

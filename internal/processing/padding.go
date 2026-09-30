@@ -1,7 +1,7 @@
 package processing
 
 import (
-	"github.com/vndroid/ixoss/internal/imath"
+	"github.com/vndroid/iXoSS/internal/imath"
 )
 
 func (p *Processor) padding(c *Context) error {

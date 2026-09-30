@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/vndroid/ixoss/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/imagetype"
 )
 
 type StringVar = Desc[string]

@@ -1,7 +1,7 @@
 package processing
 
 import (
-	"github.com/vndroid/ixoss/internal/vips"
+	"github.com/vndroid/iXoSS/internal/vips"
 )
 
 func (p *Processor) colorspaceToProcessing(c *Context) error {

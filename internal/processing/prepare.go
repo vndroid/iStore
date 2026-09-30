@@ -3,8 +3,8 @@ package processing
 import (
 	"math"
 
-	"github.com/vndroid/ixoss/internal/imath"
-	"github.com/vndroid/ixoss/internal/vips"
+	"github.com/vndroid/iXoSS/internal/imath"
+	"github.com/vndroid/iXoSS/internal/vips"
 )
 
 // ExtractGeometry extracts image width, height, orientation angle and flip flag from the image metadata.

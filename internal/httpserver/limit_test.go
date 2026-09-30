@@ -13,8 +13,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vndroid/ixoss/internal/auximageprovider"
-	"github.com/vndroid/ixoss/internal/processing"
+	"github.com/vndroid/iXoSS/internal/auximageprovider"
+	"github.com/vndroid/iXoSS/internal/processing"
 )
 
 func TestOverLimit(t *testing.T) {

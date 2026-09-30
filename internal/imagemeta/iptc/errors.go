@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/vndroid/ixoss/internal/errctx"
+	"github.com/vndroid/iXoSS/internal/errctx"
 )
 
 type IptcError struct{ *errctx.TextError }

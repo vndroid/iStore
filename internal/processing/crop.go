@@ -1,8 +1,8 @@
 package processing
 
 import (
-	"github.com/vndroid/ixoss/internal/imath"
-	"github.com/vndroid/ixoss/internal/vips"
+	"github.com/vndroid/iXoSS/internal/imath"
+	"github.com/vndroid/iXoSS/internal/vips"
 )
 
 func cropImage(img *vips.Image, cropWidth, cropHeight int, gravity *GravityOptions, offsetScale float64) error {

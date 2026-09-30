@@ -4,9 +4,9 @@ import (
 	"log/slog"
 	"math"
 
-	"github.com/vndroid/ixoss/internal/imagetype"
-	"github.com/vndroid/ixoss/internal/imath"
-	"github.com/vndroid/ixoss/internal/vips"
+	"github.com/vndroid/iXoSS/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/imath"
+	"github.com/vndroid/iXoSS/internal/vips"
 )
 
 func (p *Processor) canScaleOnLoad(c *Context, shrink float64) bool {

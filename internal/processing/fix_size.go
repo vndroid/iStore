@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"math"
 
-	"github.com/vndroid/ixoss/internal/imagetype"
-	"github.com/vndroid/ixoss/internal/vips"
+	"github.com/vndroid/iXoSS/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/vips"
 )
 
 const (

@@ -16,15 +16,15 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/vndroid/ixoss/internal/imagedata"
-	"github.com/vndroid/ixoss/internal/imageinfo"
-	"github.com/vndroid/ixoss/internal/imagetype"
-	"github.com/vndroid/ixoss/internal/options"
-	"github.com/vndroid/ixoss/internal/ossprocess"
-	"github.com/vndroid/ixoss/internal/singleflight"
-	"github.com/vndroid/ixoss/internal/source"
-	"github.com/vndroid/ixoss/internal/vips"
-	"github.com/vndroid/ixoss/internal/vips/color"
+	"github.com/vndroid/iXoSS/internal/imagedata"
+	"github.com/vndroid/iXoSS/internal/imageinfo"
+	"github.com/vndroid/iXoSS/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/options"
+	"github.com/vndroid/iXoSS/internal/ossprocess"
+	"github.com/vndroid/iXoSS/internal/singleflight"
+	"github.com/vndroid/iXoSS/internal/source"
+	"github.com/vndroid/iXoSS/internal/vips"
+	"github.com/vndroid/iXoSS/internal/vips/color"
 )
 
 // watermarkProvider supplies the watermark image the pipeline composites.

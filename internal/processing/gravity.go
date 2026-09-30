@@ -1,8 +1,8 @@
 package processing
 
 import (
-	"github.com/vndroid/ixoss/internal/options"
-	"github.com/vndroid/ixoss/internal/options/keys"
+	"github.com/vndroid/iXoSS/internal/options"
+	"github.com/vndroid/iXoSS/internal/options/keys"
 )
 
 var gravityTypesRotationMap = map[int]map[GravityType]GravityType{

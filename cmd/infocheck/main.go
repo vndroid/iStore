@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/vndroid/ixoss/internal/imageinfo"
+	"github.com/vndroid/iXoSS/internal/imageinfo"
 )
 
 func main() {

@@ -3,7 +3,7 @@ package imagetype
 import (
 	"net/http"
 
-	"github.com/vndroid/ixoss/internal/errctx"
+	"github.com/vndroid/iXoSS/internal/errctx"
 )
 
 type (

@@ -12,10 +12,10 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/vndroid/ixoss/internal/auximageprovider"
-	"github.com/vndroid/ixoss/internal/imagetype"
-	"github.com/vndroid/ixoss/internal/processing"
-	"github.com/vndroid/ixoss/internal/security"
+	"github.com/vndroid/iXoSS/internal/auximageprovider"
+	"github.com/vndroid/iXoSS/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/processing"
+	"github.com/vndroid/iXoSS/internal/security"
 )
 
 // writeGIF writes a GIF of n one-pixel frames on a w×h logical screen. The

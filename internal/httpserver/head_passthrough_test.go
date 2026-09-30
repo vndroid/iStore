@@ -13,12 +13,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/vndroid/ixoss/internal/auximageprovider"
-	"github.com/vndroid/ixoss/internal/imagetype"
-	"github.com/vndroid/ixoss/internal/ossprocess"
-	"github.com/vndroid/ixoss/internal/processing"
-	"github.com/vndroid/ixoss/internal/security"
-	"github.com/vndroid/ixoss/internal/singleflight"
+	"github.com/vndroid/iXoSS/internal/auximageprovider"
+	"github.com/vndroid/iXoSS/internal/imagetype"
+	"github.com/vndroid/iXoSS/internal/ossprocess"
+	"github.com/vndroid/iXoSS/internal/processing"
+	"github.com/vndroid/iXoSS/internal/security"
+	"github.com/vndroid/iXoSS/internal/singleflight"
 )
 
 func TestRecoveredFlightPanicIsHTTP500(t *testing.T) {

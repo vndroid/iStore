@@ -5,7 +5,7 @@ import (
 	"io"
 	"slices"
 
-	"github.com/vndroid/ixoss/internal/bufreader"
+	"github.com/vndroid/iXoSS/internal/bufreader"
 )
 
 const (

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/vndroid/ixoss/internal/env"
+	"github.com/vndroid/iXoSS/internal/env"
 )
 
 type ResizeType int

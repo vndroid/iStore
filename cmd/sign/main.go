@@ -19,8 +19,8 @@ import (
 	"net/url"
 	"os"
 
-	"github.com/vndroid/ixoss/internal/httpserver"
-	"github.com/vndroid/ixoss/internal/security"
+	"github.com/vndroid/iXoSS/internal/httpserver"
+	"github.com/vndroid/iXoSS/internal/security"
 )
 
 func main() {

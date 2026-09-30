@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/vndroid/ixoss/internal/imagedata"
-	"github.com/vndroid/ixoss/internal/options"
+	"github.com/vndroid/iXoSS/internal/imagedata"
+	"github.com/vndroid/iXoSS/internal/options"
 )
 
 // staticProvider is a simple implementation of ImageProvider, which returns
