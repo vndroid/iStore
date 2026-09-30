@@ -56,7 +56,7 @@ func negotiateFormat(accept string, supports func(imagetype.Type) bool) imagetyp
 // decode AVIF. A malformed q value makes that media range unacceptable.
 func mimeQuality(accept, mime string) float64 {
 	best := 0.0
-	for _, part := range strings.Split(accept, ",") {
+	for part := range strings.SplitSeq(accept, ",") {
 		pieces := strings.Split(part, ";")
 		if !strings.EqualFold(strings.TrimSpace(pieces[0]), mime) {
 			continue

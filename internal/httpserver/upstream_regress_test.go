@@ -119,10 +119,8 @@ func TestWatermarkExpiryUnderConcurrency(t *testing.T) {
 	var mu sync.Mutex
 	var failures []string
 
-	for i := 0; i < 300; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for i := range 300 {
+		wg.Go(func() {
 			defer func() {
 				if r := recover(); r != nil {
 					mu.Lock()
@@ -141,7 +139,7 @@ func TestWatermarkExpiryUnderConcurrency(t *testing.T) {
 				mu.Unlock()
 			}
 			d.Close()
-		}()
+		})
 		if i%25 == 0 {
 			time.Sleep(time.Millisecond)
 		}
@@ -572,9 +570,7 @@ func TestWatermarkConcurrentMissFetchesOnce(t *testing.T) {
 	var wg sync.WaitGroup
 	var bad atomic.Int32
 	for range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			d, _, err := p.Get(context.Background(), imageOptions("wm.png"))
 			if err != nil || d == nil {
 				bad.Add(1)
@@ -584,7 +580,7 @@ func TestWatermarkConcurrentMissFetchesOnce(t *testing.T) {
 				bad.Add(1)
 			}
 			d.Close()
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -790,16 +786,14 @@ func TestWatermarkSlowBuildCoalescesTheBurst(t *testing.T) {
 	var wg sync.WaitGroup
 	var bad atomic.Int32
 	for range 12 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			d, _, err := p.Get(context.Background(), imageOptions("wm.png"))
 			if err != nil || d == nil {
 				bad.Add(1)
 				return
 			}
 			d.Close()
-		}()
+		})
 	}
 	wg.Wait()
 

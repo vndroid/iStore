@@ -38,11 +38,9 @@ func TestConcurrentReferences(t *testing.T) {
 	var wg sync.WaitGroup
 	refs := make(chan ImageData, n)
 	for range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			refs <- d.Ref()
-		}()
+		})
 	}
 	wg.Wait()
 	close(refs)

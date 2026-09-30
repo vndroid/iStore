@@ -40,16 +40,14 @@ func TestDoCoalescesAndReportsShared(t *testing.T) {
 	results := make(chan result, n)
 	var wg sync.WaitGroup
 	for range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			v, err, shared := g.Do("same", func() (any, error) {
 				calls.Add(1)
 				<-release
 				return "value", nil
 			})
 			results <- result{v, err, shared}
-		}()
+		})
 	}
 	waitForDuplicates(t, &g, "same", n-1)
 	close(release)
@@ -77,15 +75,13 @@ func TestDoPanicReturnsOneSharedError(t *testing.T) {
 	errs := make(chan error, n)
 	var wg sync.WaitGroup
 	for range n {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_, err, _ := g.Do("panic", func() (any, error) {
 				<-release
 				panic("boom")
 			})
 			errs <- err
-		}()
+		})
 	}
 	waitForDuplicates(t, &g, "panic", n-1)
 	close(release)

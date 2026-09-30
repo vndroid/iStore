@@ -10,7 +10,7 @@ import (
 func fill(t *testing.T, d *Disk, n, size int) {
 	t.Helper()
 	blob := make([]byte, size)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		k := Key{SourcePath: fmt.Sprintf("/img%d.jpg", i), SourceSize: 1, SourceMod: 1, Chain: "c"}
 		if err := d.Put(k, blob); err != nil {
 			t.Fatal(err)

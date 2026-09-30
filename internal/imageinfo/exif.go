@@ -87,7 +87,7 @@ func parseEXIF(b []byte) map[string]string {
 		count := int(bo.Uint16(b[cur.off:]))
 		base := cur.off + 2
 
-		for e := 0; e < count; e++ {
+		for e := range count {
 			p := base + e*12
 			if p+12 > len(b) {
 				break

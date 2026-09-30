@@ -22,8 +22,8 @@ const (
 
 func rgba(w, h int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
+	for y := range h {
+		for x := range w {
 			img.Set(x, y, color.RGBA{uint8(x), uint8(y), 0x80, 0xFF})
 		}
 	}
@@ -51,7 +51,7 @@ func encodePNG(t *testing.T, w, h int) []byte {
 func encodeGIF(t *testing.T, w, h, frames int) []byte {
 	t.Helper()
 	g := &gif.GIF{}
-	for i := 0; i < frames; i++ {
+	for i := range frames {
 		p := image.NewPaletted(image.Rect(0, 0, w, h), []color.Color{
 			color.Black, color.White,
 		})
